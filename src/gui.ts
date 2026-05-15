@@ -35,7 +35,7 @@ export function parseSettings(): Settings {
         settings.kMeansClusteringColorSpace = ClusteringColorSpace.RGB;
     } else if ($("#optColorSpaceHSL").prop("checked")) {
         settings.kMeansClusteringColorSpace = ClusteringColorSpace.HSL;
-    } else if ($("#optColorSpaceRGB").prop("checked")) {
+    } else if ($("#optColorSpaceLAB").prop("checked")) {
         settings.kMeansClusteringColorSpace = ClusteringColorSpace.LAB;
     }
 
@@ -198,7 +198,7 @@ export function downloadPalettePng() {
 
 export function downloadPNG() {
     if ($("#svgContainer svg").length > 0) {
-        saveSvgAsPng($("#svgContainer svg").get(0), "paintbynumbers.png");
+        saveSvgAsPng($("#svgContainer svg").get(0)!, "paintbynumbers.png");
     }
 }
 

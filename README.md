@@ -1,7 +1,14 @@
 # Paint by numbers generator
 Generate paint by number images (vectorized with SVG) from any input image.
 
-*** This project was a proof of concept for fun back in the day, it is not being actively maintained but feel free to fork and make your own changes.  ***
+> **Modernized fork (v2).** The original was a 2019 proof of concept. This fork
+> brings it up to date: a modern, secure dependency stack (**0 npm
+> vulnerabilities**, down from 60), an [esbuild](https://esbuild.github.io/)
+> build replacing requirejs/AMD, ESLint (replacing the deprecated TSLint),
+> TypeScript 5, jQuery 3.7, Node 20+ support, and a CI pipeline that
+> type-checks, lints, builds and smoke-tests the CLI. The image-processing
+> algorithm itself is unchanged. A latent bug where the **Lab** clustering
+> color space was unreachable has also been fixed.
 
 ## Demo
 
@@ -11,7 +18,7 @@ Try it out [here](https://drake7707.github.io/paintbynumbersgenerator/index.html
 
 The CLI version is a self contained node application that does the conversion from arguments, for example:
 ```
-paint-by-numbers-generator-win.exe -i input.png -o output.svg
+node dist/cli.js -i input.png -o output.svg
 ```
 You can change the settings in settings.json or optionally specify a specific settings.json with the `-c path_to_settings.json` argument.
 
@@ -108,11 +115,37 @@ The CLI version is useful if you want to automate the process into your own scri
 
 ## Running locally
 
-I used VSCode, which has built in typescript support. To debug it uses a tiny webserver to host the files on localhost. 
+Requires **Node.js 20+** (see `.nvmrc`).
 
-To run do `npm install` to restore packages and then `npm start` to start the webserver
+```
+npm install      # restore packages
+npm start        # build the web app and serve it at http://127.0.0.1:10001/
+npm run dev      # same, but rebuilds on source changes
+```
 
+### Available scripts
 
-## Compiling the cli version
+| Script              | Description                                              |
+| ------------------- | -------------------------------------------------------- |
+| `npm start`         | Build the web app and serve it locally                   |
+| `npm run dev`       | Serve with rebuild-on-change (watch mode)                |
+| `npm run build`     | Build both the web bundle and the CLI                    |
+| `npm run build:web` | Bundle the browser app to `scripts/main.js`              |
+| `npm run build:cli` | Bundle the CLI to `dist/cli.js`                          |
+| `npm run typecheck` | Type-check with `tsc --noEmit`                           |
+| `npm run lint`      | Lint with ESLint                                         |
+| `npm run check`     | Type-check + lint + build (run before committing)        |
 
-Install pkg first if you don't have it yet `npm install pkg -g`. Then in the root folder run `pkg .`. This will generate the output for linux, windows and macos.
+## Building the CLI version
+
+`pkg` is no longer used (it is unmaintained and never bundled the native
+`canvas`/`sharp` binaries cleanly). Instead, build the bundled CLI with:
+
+```
+npm run build:cli
+node dist/cli.js -i input.png -o output.svg -c src-cli/settings.json
+```
+
+`dist/cli.js` is a self-contained Node script (the native `canvas` and `sharp`
+modules are resolved from `node_modules` at runtime). The `paint-by-numbers-generator`
+bin entry points at it, so `npm install -g .` also works.

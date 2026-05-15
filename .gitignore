@@ -1,3 +1,7 @@
-node_modules
-*.js
+node_modules/
+dist/
+test-output/
+ci-out/
 *.map
+.DS_Store
+*.log

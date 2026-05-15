@@ -5,11 +5,11 @@ export interface IMap<T> {
     [key: string]: T;
 }
 
-export async function delay(ms: number) {
+export async function delay(ms: number): Promise<void> {
     if (typeof window !== "undefined") {
-        return new Promise((exec) => (<any> window).setTimeout(exec, ms));
+        return new Promise<void>((resolve) => (window as any).setTimeout(resolve, ms));
     } else {
-        return new Promise((exec) => exec());
+        return Promise.resolve();
     }
 }
 

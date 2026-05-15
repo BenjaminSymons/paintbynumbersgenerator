@@ -1,8 +1,9 @@
 import * as canvas from "canvas";
 import * as fs from "fs";
-import * as minimist from "minimist";
+import minimist from "minimist";
 import * as path from "path";
 import * as process from "process";
+import sharp from "sharp";
 import { ColorReducer } from "../src/colorreductionmanagement";
 import { RGB } from "../src/common";
 import { FacetBorderSegmenter } from "../src/facetBorderSegmenter";
@@ -13,7 +14,6 @@ import { FacetResult } from "../src/facetmanagement";
 import { FacetReducer } from "../src/facetReducer";
 import { Settings } from "../src/settings";
 import { Point } from "../src/structs/point";
-const svg2img = require("svg2img");
 
 class CLISettingsOutputProfile {
     public name: string = "";
@@ -54,7 +54,9 @@ async function main() {
         }
     }
 
-    const settings: CLISettings = require(configPath);
+    // Parse settings as plain JSON rather than require()-ing it, so a
+    // settings file can never execute arbitrary code.
+    const settings: CLISettings = JSON.parse(fs.readFileSync(configPath, "utf-8")) as CLISettings;
 
     const img = await canvas.loadImage(imagePath);
     const c = canvas.createCanvas(img.width, img.height);
@@ -98,12 +100,17 @@ async function main() {
     ctxKmeans.fillRect(0, 0, cKmeans.width, cKmeans.height);
 
     const kmeansImgData = ctxKmeans.getImageData(0, 0, cKmeans.width, cKmeans.height);
-    await ColorReducer.applyKMeansClustering(imgData, kmeansImgData, ctx, settings, (kmeans) => {
+    // node-canvas ImageData is structurally compatible but lacks the DOM-only
+    // `colorSpace` field; bridge the two typings explicitly.
+    const domImgData = imgData as unknown as ImageData;
+    const domKmeansImgData = kmeansImgData as unknown as ImageData;
+    const domCtx = ctx as unknown as CanvasRenderingContext2D;
+    await ColorReducer.applyKMeansClustering(domImgData, domKmeansImgData, domCtx, settings, (kmeans) => {
         const progress = (100 - (kmeans.currentDeltaDistanceDifference > 100 ? 100 : kmeans.currentDeltaDistanceDifference)) / 100;
         ctxKmeans.putImageData(kmeansImgData, 0, 0);
     });
 
-    const colormapResult = ColorReducer.createColorMap(kmeansImgData);
+    const colormapResult = ColorReducer.createColorMap(domKmeansImgData);
 
     let facetResult = new FacetResult();
     if (typeof settings.narrowPixelStripCleanupRuns === "undefined" || settings.narrowPixelStripCleanupRuns === 0) {
@@ -164,27 +171,12 @@ async function main() {
         if (profile.filetype === "svg") {
             fs.writeFileSync(svgProfilePath, svgString);
         } else if (profile.filetype === "png") {
-
-            const imageBuffer = await new Promise<Buffer>((then, reject) => {
-                svg2img(svgString, function (error: Error, buffer: Buffer) {
-                    if (error) {
-                        reject(error);
-                    } else {
-                        then(buffer);
-                    }
-                });
-            });
+            const imageBuffer = await sharp(Buffer.from(svgString)).png().toBuffer();
             fs.writeFileSync(svgProfilePath, imageBuffer);
         } else if (profile.filetype === "jpg") {
-            const imageBuffer = await new Promise<Buffer>((then, reject) => {
-                svg2img(svgString, { format: "jpg", quality: profile.filetypeQuality }, function (error: Error, buffer: Buffer) {
-                    if (error) {
-                        reject(error);
-                    } else {
-                        then(buffer);
-                    }
-                });
-            });
+            const imageBuffer = await sharp(Buffer.from(svgString))
+                .jpeg({ quality: profile.filetypeQuality })
+                .toBuffer();
             fs.writeFileSync(svgProfilePath, imageBuffer);
         }
     }
