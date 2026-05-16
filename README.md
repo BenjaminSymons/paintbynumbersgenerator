@@ -103,20 +103,22 @@ The CLI version is useful if you want to automate the process into your own scri
 #### Kit mode: snap to a real paint catalog
 
 By default the generated colors are arbitrary RGB values. Pass a paint catalog
-and the colors snap to real, purchasable paints, with canvas numbers and a
-shopping list to match:
+and the colors snap to real, purchasable paints, with a print-ready kit PDF,
+canvas numbers and a shopping list to match:
 
 ```
 node dist/cli.js -i input.png -o output.svg \
   --catalog src-cli/catalogs/generic-acrylic-24.json \
-  --colors 12 --canvas-size 40x50
+  --colors 12 --canvas-size 40x50 --paper A4
 ```
 
 | Flag | Description |
 | ---- | ----------- |
 | `--catalog <file>` | A JSON catalog of `{ sku, name, rgb }` paints. Generated colors snap to the nearest catalog paint. A bundled `src-cli/catalogs/generic-acrylic-24.json` is included as a clearly labelled example — supply your own for real brand SKUs. |
 | `--colors <N>` | Number of distinct paint regions (1-256). Controls painting complexity, independent of how many colors the catalog has. |
-| `--canvas-size <WxH>` | Physical canvas size in cm (e.g. `40x50`). Drives the paint-quantity estimate. Default `40x50`. |
+| `--canvas-size <WxH>` | Physical canvas size in cm (e.g. `40x50`). The kit PDF is printed at this true size; also drives the paint-quantity estimate. Default `40x50`. |
+| `--paper <A4\|Letter>` | Print paper for the kit PDF. The canvas is tiled across as many sheets as the size needs. Default `A4`. |
+| `--dpi <N>` | Print resolution for the cover preview and the legibility guard (72-1200). Default `300`. |
 | `--coverage <tubes/cm²>` | Paint needed per cm² of painted area. Default `0.0025` (roughly one tube per 400 cm²). It is a rough estimate — override it to match your paint and style. |
 
 For negative or ambiguous values use `--flag=VALUE` (e.g. `--coverage=0.001`),
@@ -136,6 +138,15 @@ Paints that no catalog color matches well are flagged out of gamut with a
 console warning; the kit still generates. Unused paints are filtered out, so
 the numbering has no gaps and the palette JSON gains `number`, `sku`, `name`,
 `snapDistance`, and `outOfGamut` fields in kit mode.
+
+It also writes a print-ready **`output-kit.pdf`**: a colored cover preview, the
+numbered canvas tiled across the chosen paper at the true canvas size (with
+corner crop ticks and per-sheet seam labels for hand-alignment), and a swatch
+legend (number + SKU + name + colour). Numbers too small to hand-paint at the
+chosen canvas size are dropped from the canvas and recovered via the legend.
+The colored cover and the numbered canvas are also written standalone as
+`output-cover.png` and `output-canvas.svg`. Colours throughout are the
+*closest catalog swatch* — approximate, not calibrated paint matches.
 
 ## Screenshots
 

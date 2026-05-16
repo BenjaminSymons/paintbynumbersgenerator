@@ -4,6 +4,32 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project uses a
 four-digit `MAJOR.MINOR.PATCH.MICRO` version in the `VERSION` file.
 
+## [2.2.0.0] - 2026-05-17
+
+### Added
+- **Print-ready kit PDF (Phase 1 step 4).** Kit mode now also emits a
+  `*-kit.pdf` you can actually print and paint:
+  - A colored cover preview, the numbered canvas tiled across real paper at the
+    declared physical size, and a swatch legend (number + SKU + name + colour).
+  - `--paper <A4|Letter>` (default A4) and `--dpi <N>` (default 300).
+    `--canvas-size` now drives true 1:1 physical scaling, not just the
+    tube estimate.
+  - Tiled multi-page output gets corner crop ticks and per-sheet seam labels
+    with a 5 mm overlap for hand-alignment.
+  - Print-legibility guard: facets too small to carry a readable hand-painted
+    number at the chosen canvas size keep their region/fill but drop the
+    in-facet number — it stays recoverable from the legend.
+  - Also writes `*-cover.png` and `*-canvas.svg` as standalone deliverables;
+    the SVG now carries a `viewBox`.
+- `scripts/kit-smoke.mjs` extended with PDF / tile-count / legibility-guard /
+  paper+dpi-validation checks (still run via `npm run test:kit` in CI).
+
+### Notes
+- Kit labels render in the PDF core font Helvetica (deterministic across
+  platforms, no vendored binary). The PDF is required to be visually
+  equivalent, not byte-identical — byte-identical determinism is a Phase 2
+  (`manifest.json`) concern.
+
 ## [2.1.0.0] - 2026-05-17
 
 ### Added

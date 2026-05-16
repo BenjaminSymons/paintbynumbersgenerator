@@ -1,8 +1,8 @@
-// Kit-pipeline smoke test (Phase 1 steps 1-3). Not a unit-test framework —
+// Kit-pipeline smoke test (Phase 1 steps 1-4). Not a unit-test framework —
 // a self-contained assertion script in the project's existing CLI-smoke style.
 // Generates fixtures in a temp dir, runs dist/cli.js, asserts on the outputs,
-// exits non-zero on any failure. Step 4 (PDF / print-legibility / legend) is
-// intentionally out of scope here and is covered when step 4 lands (6b).
+// exits non-zero on any failure. Checks 15-18 cover step 4 (print-ready PDF,
+// tile-count math, the print-legibility guard, paper/dpi validation).
 //
 // Run: node scripts/kit-smoke.mjs   (after `npm run build:cli`)
 import { spawnSync } from "node:child_process";
@@ -338,6 +338,79 @@ check("decimal --canvas-size propagates; partial settings falls back to defaults
     assert(r2.code === 0, `partial settings: expected exit 0 (defaults fill gaps), got ${r2.code}: ${r2.stderr}`);
     const pal = J(path.join(work, "min.json"));
     assert(Array.isArray(pal) && pal.length >= 1, "partial settings must still yield a valid palette");
+});
+
+// ---- 15. kit PDF + cover + canvas artifacts emitted ----------------------
+// Tile-count math, mirrored from kitpdf.ts (A4, 1cm margin, 0.5cm overlap).
+const A4 = { w: 21.0, h: 29.7 };
+const tileCount = (canvasCm, paperCm) => {
+    const printable = paperCm - 2 * 1.0;
+    if (canvasCm <= printable) return 1;
+    return Math.ceil((canvasCm - 0.5) / (printable - 0.5));
+};
+const pdfCount = (p) => {
+    const m = fs.readFileSync(p, "latin1").match(/\/Count (\d+)/);
+    return m ? Number(m[1]) : -1;
+};
+check("kit PDF + cover.png + canvas.svg emitted, single-sheet page count", () => {
+    const o = path.join(work, "kit1.svg");
+    const r = run(["-i", TESTINPUT, "-o", o, "-c", SETTINGS, "--catalog", GENERIC,
+        "--colors", "12", "--canvas-size", "10x12"]);
+    assert(r.code === 0, `expected exit 0, got ${r.code}: ${r.stderr}`);
+    const pdf = path.join(work, "kit1-kit.pdf");
+    const png = path.join(work, "kit1-cover.png");
+    const csv = path.join(work, "kit1-canvas.svg");
+    assert(fs.existsSync(pdf), "kit PDF not emitted");
+    assert(fs.readFileSync(pdf, "latin1").startsWith("%PDF"), "kit PDF has no %PDF header");
+    assert(fs.statSync(pdf).size > 2000, "kit PDF suspiciously small");
+    const sig = fs.readFileSync(png).subarray(0, 8);
+    assert(sig.equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
+        "cover.png is not a PNG");
+    assert(/viewBox="0 0 \d+ \d+"/.test(fs.readFileSync(csv, "utf8")),
+        "canvas.svg missing viewBox (required for PDF scaling)");
+    // 10x12 cm fits one A4 sheet -> cover + 1 canvas + 1 legend = 3
+    assert(pdfCount(pdf) === 3, `single-sheet kit must be 3 pages, got ${pdfCount(pdf)}`);
+});
+
+// ---- 16. tiled kit: page count == cover + cols*rows + legend -------------
+check("tiled kit page count matches tile math", () => {
+    const o = path.join(work, "kit2.svg");
+    const r = run(["-i", TESTINPUT, "-o", o, "-c", SETTINGS, "--catalog", GENERIC,
+        "--colors", "8", "--canvas-size", "40x50", "--paper", "A4"]);
+    assert(r.code === 0, `expected exit 0, got ${r.code}: ${r.stderr}`);
+    const cols = tileCount(40, A4.w), rows = tileCount(50, A4.h);
+    assert(cols > 1 && rows > 1, `fixture should tile, got ${cols}x${rows}`);
+    // testinput is simple line art -> few paints -> single legend page
+    const expected = 1 + cols * rows + 1;
+    assert(pdfCount(path.join(work, "kit2-kit.pdf")) === expected,
+        `tiled kit expected ${expected} pages (1 cover + ${cols}x${rows} + 1 legend), got ${pdfCount(path.join(work, "kit2-kit.pdf"))}`);
+});
+
+// ---- 17. CRITICAL print-legibility guard: tiny canvas suppresses numbers -
+check("CRITICAL legibility guard suppresses sub-threshold numbers, keeps regions", () => {
+    const big = path.join(work, "big.svg"), tiny = path.join(work, "tiny.svg");
+    const rb = run(["-i", TESTINPUT, "-o", big, "-c", SETTINGS, "--catalog", GENERIC,
+        "--colors", "12", "--canvas-size", "200x250"]);
+    const rt = run(["-i", TESTINPUT, "-o", tiny, "-c", SETTINGS, "--catalog", GENERIC,
+        "--colors", "12", "--canvas-size", "3x4"]);
+    assert(rb.code === 0 && rt.code === 0, `runs failed: ${rb.stderr} ${rt.stderr}`);
+    const txt = (p) => (fs.readFileSync(p, "utf8").match(/<\/text>/g) || []).length;
+    const pth = (p) => (fs.readFileSync(p, "utf8").match(/<path/g) || []).length;
+    const bigSvg = path.join(work, "big-canvas.svg"), tinySvg = path.join(work, "tiny-canvas.svg");
+    assert(txt(bigSvg) > 0, "large canvas should keep its numbers");
+    assert(txt(tinySvg) < txt(bigSvg), `tiny canvas must suppress numbers: tiny=${txt(tinySvg)} big=${txt(bigSvg)}`);
+    assert(pth(tinySvg) === pth(bigSvg) && pth(tinySvg) > 0,
+        `regions must be retained when numbers are suppressed: tiny=${pth(tinySvg)} big=${pth(bigSvg)}`);
+});
+
+// ---- 18. invalid --paper / --dpi rejected --------------------------------
+check("invalid --paper / --dpi rejected (exit 1)", () => {
+    const o = path.join(work, "pp.svg");
+    for (const [flag, val] of [["--paper", "A3"], ["--dpi", "50"], ["--dpi", "abc"]]) {
+        const r = run(["-i", TESTINPUT, "-o", o, "-c", SETTINGS, "--catalog", GENERIC, flag, val]);
+        assert(r.code !== 0, `${flag} ${val}: expected non-zero exit, got ${r.code}`);
+        assert(new RegExp(flag).test(r.stderr), `${flag} ${val}: expected error mentioning ${flag}, got: ${r.stderr}`);
+    }
 });
 
 fs.rmSync(work, { recursive: true, force: true });

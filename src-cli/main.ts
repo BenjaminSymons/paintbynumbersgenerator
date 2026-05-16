@@ -13,6 +13,7 @@ import { FacetCreator } from "../src/facetCreator";
 import { FacetLabelPlacer } from "../src/facetLabelPlacer";
 import { FacetResult } from "../src/facetmanagement";
 import { FacetReducer } from "../src/facetReducer";
+import { buildKitPdf, LegendRow } from "./kitpdf";
 import { Settings } from "../src/settings";
 import { Point } from "../src/structs/point";
 
@@ -45,6 +46,10 @@ async function main() {
         console.log("Usage: exe -i <input_image> -o <output_svg> [-c <settings_json>]");
         console.log("  [--catalog <catalog_json>]  snap colors to a real paint catalog");
         console.log("  [--colors <N>]              number of paint regions (painting complexity)");
+        console.log("  [--canvas-size <WxH>]       physical canvas size in cm (default 40x50)");
+        console.log("  [--paper <A4|Letter>]       print paper for the kit PDF (default A4)");
+        console.log("  [--dpi <N>]                 print resolution for the kit PDF (default 300)");
+        console.log("  [--coverage <n>]            paint tubes per cm^2 estimate (default 0.0025)");
         process.exit(1);
     }
 
@@ -137,6 +142,36 @@ async function main() {
         }
         coverageConst = cov;
     }
+
+    // Print resolution for the kit PDF's rasterized cover preview, and the
+    // coarse-printer floor of the legibility guard. Vector pages don't depend
+    // on it; only the cover raster and the min-feature check do.
+    let dpi = 300;
+    if (typeof args.dpi !== "undefined") {
+        requireValue("dpi", args.dpi);
+        const d = Number(args.dpi);
+        if (!Number.isInteger(d) || d < 72 || d > 1200) {
+            console.error(`--dpi must be an integer 72-1200, got "${args.dpi}"`);
+            process.exit(1);
+        }
+        dpi = d;
+    }
+
+    // Paper for the kit PDF. cm dimensions, portrait.
+    const PAPERS: { [k: string]: { wCm: number; hCm: number } } = {
+        a4: { wCm: 21.0, hCm: 29.7 },
+        letter: { wCm: 21.59, hCm: 27.94 },
+    };
+    let paperName = "A4";
+    if (typeof args.paper !== "undefined") {
+        requireValue("paper", args.paper);
+        paperName = String(args.paper);
+        if (!PAPERS[paperName.toLowerCase()]) {
+            console.error(`--paper must be one of ${Object.keys(PAPERS).map((p) => p.toUpperCase()).join(", ")}, got "${args.paper}"`);
+            process.exit(1);
+        }
+    }
+    const paper = PAPERS[paperName.toLowerCase()];
 
     const img = await canvas.loadImage(imagePath);
     const c = canvas.createCanvas(img.width, img.height);
@@ -431,18 +466,70 @@ async function main() {
         fs.writeFileSync(base + "-shopping-list.md", md);
 
         console.log(`Shopping list: ${rows.length} paints -> ${base}-shopping-list.{csv,md}`);
+
+        // ---- Print-ready kit PDF (step 4) --------------------------------
+        // Legibility guard: a hand-painted number needs ~4 mm; the printer
+        // also can't reproduce a feature finer than one dot. The guard floor
+        // is the larger of the two, converted to image pixels so createSVG
+        // (which sees labelBounds in image-pixel space) can apply it.
+        const MIN_LABEL_MM = 4;
+        const imgPxPerCm = facetResult.width / canvasWidthCm;
+        const printerDotCm = 2.54 / dpi;
+        const minFeatureCm = Math.max(MIN_LABEL_MM / 10, printerDotCm);
+        const minLabelPx = minFeatureCm * imgPxPerCm;
+
+        // Numbered canvas: borders + guarded labels, no fill (paint-by-swatch
+        // regions stay outlined even where the number is suppressed).
+        const canvasSvg = await createSVG(facetResult, colormapResult.colorsByIndex,
+            3, false, true, true, 60, "#000", null, labelMap, minLabelPx);
+        fs.writeFileSync(base + "-canvas.svg", canvasSvg);
+
+        // Colored cover preview (filled, no borders/labels), rasterized.
+        const coverSvg = await createSVG(facetResult, colormapResult.colorsByIndex,
+            3, true, false, false, 60, "#000", null, labelMap);
+        const coverPng = await sharp(Buffer.from(coverSvg))
+            .resize({ width: Math.min(3 * facetResult.width, 2000), withoutEnlargement: true })
+            .png().toBuffer();
+        fs.writeFileSync(base + "-cover.png", coverPng);
+
+        const legend: LegendRow[] = rows.map((r) => ({
+            number: r.number, sku: r.sku, name: r.name, hex: r.hex,
+        }));
+
+        const pdfPath = base + "-kit.pdf";
+        const kit = await buildKitPdf({
+            outPath: pdfPath,
+            canvasSvg,
+            coverPng,
+            legend,
+            catalogName: catalog.name,
+            canvasWidthCm,
+            canvasHeightCm,
+            paperWidthCm: paper.wCm,
+            paperHeightCm: paper.hCm,
+        });
+        console.log(`Kit PDF: ${kit.pages} pages (${kit.cols}x${kit.rows} canvas tiles on ${paperName}) -> ${pdfPath}`);
     }
 }
 
-async function createSVG(facetResult: FacetResult, colorsByIndex: RGB[], sizeMultiplier: number, fill: boolean, stroke: boolean, addColorLabels: boolean, fontSize: number = 60, fontColor: string = "black", onUpdate: ((progress: number) => void) | null = null, labelMap: Map<number, number> | null = null) {
+// `minLabelPx` is the print-legibility guard (kit mode): a facet whose label
+// box is smaller than this many image pixels in either dimension is too small
+// to carry a readable hand-painted number at the chosen physical canvas size,
+// so its in-facet number is suppressed (the region keeps its fill/border and
+// is recovered from the swatch legend). This is print-space and distinct from
+// the pixel-space `removeFacetsSmallerThanNrOfPoints` facet removal. 0 = off.
+async function createSVG(facetResult: FacetResult, colorsByIndex: RGB[], sizeMultiplier: number, fill: boolean, stroke: boolean, addColorLabels: boolean, fontSize: number = 60, fontColor: string = "black", onUpdate: ((progress: number) => void) | null = null, labelMap: Map<number, number> | null = null, minLabelPx: number = 0) {
 
     let svgString = "";
     const xmlns = "http://www.w3.org/2000/svg";
 
     const svgWidth = sizeMultiplier * facetResult.width;
     const svgHeight = sizeMultiplier * facetResult.height;
+    // A `viewBox` is required for the PDF step: svg-to-pdfkit scales by the
+    // viewBox, and the kit canvas must map to a real physical size. The legacy
+    // SVG had none (pixel dims only); adding it is backward-compatible.
     svgString += `<?xml version="1.0" standalone="no"?>
-                  <svg width="${svgWidth}" height="${svgHeight}" xmlns="${xmlns}">`;
+                  <svg width="${svgWidth}" height="${svgHeight}" viewBox="0 0 ${svgWidth} ${svgHeight}" xmlns="${xmlns}">`;
 
     for (const f of facetResult.facets) {
 
@@ -508,7 +595,8 @@ async function createSVG(facetResult: FacetResult, colorsByIndex: RGB[], sizeMul
 
             // add the color labels if necessary. I mean, this is the whole idea behind the paint by numbers part
             // so I don't know why you would hide them
-            if (addColorLabels) {
+            if (addColorLabels &&
+                !(minLabelPx > 0 && Math.min(f.labelBounds.width, f.labelBounds.height) < minLabelPx)) {
 
                 const labelOffsetX = f.labelBounds.minX * sizeMultiplier;
                 const labelOffsetY = f.labelBounds.minY * sizeMultiplier;

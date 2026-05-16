@@ -38,8 +38,11 @@ const cliConfig = {
   format: "esm",
   platform: "node",
   target: ["node20"],
-  // Native / heavy runtime deps stay external and are resolved from node_modules.
-  external: ["canvas", "sharp"],
+  // Native / heavy runtime deps stay external and are resolved from
+  // node_modules. pdfkit must stay external too: it loads its built-in AFM
+  // font metrics from its own package directory via fs at runtime, which an
+  // esbuild bundle would break.
+  external: ["canvas", "sharp", "pdfkit", "svg-to-pdfkit"],
   banner: { js: "#!/usr/bin/env node\nimport{createRequire}from'node:module';const require=createRequire(import.meta.url);" },
   sourcemap: true,
   logLevel: "info",

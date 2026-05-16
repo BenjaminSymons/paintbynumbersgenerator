@@ -98,6 +98,14 @@ proven otherwise.
   bridges the two typings with explicit `as unknown as ImageData` casts.
 - `outputProfiles` in the settings JSON drive multiple renders (svg/png/jpg)
   from one run; PNG/JPG go through `sharp`.
+- Kit mode (`--catalog`) also emits a print-ready `*-kit.pdf` via
+  `src-cli/kitpdf.ts` (`pdfkit` + `svg-to-pdfkit`). `pdfkit` must stay an
+  esbuild `external` (it reads its AFM font metrics from its own package dir at
+  runtime); labels use the PDF core font Helvetica deliberately (deterministic,
+  no vendored binary). The CLI `createSVG` now emits a `viewBox` (required for
+  PDF scaling) and takes a `minLabelPx` print-legibility guard — the web
+  `createSVG` in `guiprocessmanager.ts` does NOT have these (kit mode is
+  CLI-only, so this is an intentional divergence, not the duplication wart).
 
 ## Conventions
 
