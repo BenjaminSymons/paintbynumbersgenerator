@@ -1,6 +1,6 @@
 {
   "name": "paint-by-numbers-generator",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Generate paint by number images (vectorized with SVG) from any input image. Web app + CLI.",
   "license": "MIT",
   "author": "drake7707",
@@ -21,6 +21,7 @@
     "start": "node scripts/build.mjs --serve",
     "dev": "node scripts/build.mjs --serve --watch",
     "cli": "node dist/cli.js",
+    "test:kit": "node scripts/kit-smoke.mjs",
     "check": "npm run typecheck && npm run lint && npm run build",
     "prepublishOnly": "npm run build:cli"
   },

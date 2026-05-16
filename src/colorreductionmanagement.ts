@@ -15,6 +15,17 @@ export class ColorMapResult {
     public height!: number;
 }
 
+/**
+ * Per restricted-color snap metadata, keyed by the final snapped RGB string
+ * "r,g,b". `sku` is the kMeansColorRestrictions alias key that won; `distance`
+ * is the LARGEST (worst-case) CIE76 Lab distance of any centroid that snapped
+ * to this color. Worst-case is the honest signal: if many image regions snap
+ * to one paint and any sizeable one is a poor match, the paint IS a poor fit
+ * for the kit even if some other region matched it well.
+ * Populated only when clustering restricts to specified colors.
+ */
+export type SnapMeta = Map<string, { sku: string | null; distance: number }>;
+
 export class ColorReducer {
 
     /**
@@ -60,7 +71,7 @@ export class ColorReducer {
      *  Applies K-means clustering on the imgData to reduce the colors to
      *  k clusters and then output the result to the given outputImgData
      */
-    public static async applyKMeansClustering(imgData: ImageData, outputImgData: ImageData, ctx: CanvasRenderingContext2D, settings: Settings, onUpdate: ((kmeans: KMeans) => void) | null = null) {
+    public static async applyKMeansClustering(imgData: ImageData, outputImgData: ImageData, ctx: CanvasRenderingContext2D, settings: Settings, onUpdate: ((kmeans: KMeans) => void) | null = null, snapMeta: SnapMeta | null = null) {
         const vectors: Vector[] = [];
         let idx = 0;
         let vIdx = 0;
@@ -138,7 +149,7 @@ export class ColorReducer {
         }
 
         // update the output image data (because it will be used for further processing)
-        ColorReducer.updateKmeansOutputImageData(kmeans, settings, pointsByColor, imgData, outputImgData, true);
+        ColorReducer.updateKmeansOutputImageData(kmeans, settings, pointsByColor, imgData, outputImgData, true, snapMeta);
 
         if (onUpdate != null) {
             onUpdate(kmeans);
@@ -148,7 +159,7 @@ export class ColorReducer {
     /**
      *  Updates the image data from the current kmeans centroids and their respective associated colors (vectors)
      */
-    public static updateKmeansOutputImageData(kmeans: KMeans, settings: Settings, pointsByColor: IMap<number[]>, imgData: ImageData, outputImgData: ImageData, restrictToSpecifiedColors: boolean) {
+    public static updateKmeansOutputImageData(kmeans: KMeans, settings: Settings, pointsByColor: IMap<number[]>, imgData: ImageData, outputImgData: ImageData, restrictToSpecifiedColors: boolean, snapMeta: SnapMeta | null = null) {
 
         for (let c: number = 0; c < kmeans.centroids.length; c++) {
             // for each cluster centroid
@@ -204,6 +215,18 @@ export class ColorReducer {
                                 rgb = settings.colorAliases[closestRestrictedColor];
                             } else {
                                 rgb = closestRestrictedColor;
+                            }
+                            // record the snap so callers can flag out-of-gamut
+                            // colors. Multiple centroids can snap to the same
+                            // paint — keep the LARGEST (worst-case) distance so
+                            // a good match can't mask a bad one.
+                            if (snapMeta !== null) {
+                                const key = `${rgb[0]},${rgb[1]},${rgb[2]}`;
+                                const sku = typeof closestRestrictedColor === "string" ? closestRestrictedColor : null;
+                                const prev = snapMeta.get(key);
+                                if (prev === undefined || minDistance > prev.distance) {
+                                    snapMeta.set(key, { sku, distance: minDistance });
+                                }
                             }
                         }
                     }

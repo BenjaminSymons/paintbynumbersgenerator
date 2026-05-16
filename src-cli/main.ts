@@ -4,7 +4,8 @@ import minimist from "minimist";
 import * as path from "path";
 import * as process from "process";
 import sharp from "sharp";
-import { ColorReducer } from "../src/colorreductionmanagement";
+import { Catalog, applyCatalogToSettings, catalogBySku, parseCatalog } from "../src/catalog";
+import { ColorReducer, SnapMeta } from "../src/colorreductionmanagement";
 import { RGB } from "../src/common";
 import { FacetBorderSegmenter } from "../src/facetBorderSegmenter";
 import { FacetBorderTracer } from "../src/facetBorderTracer";
@@ -42,6 +43,8 @@ async function main() {
 
     if (typeof imagePath === "undefined" || typeof svgPath === "undefined") {
         console.log("Usage: exe -i <input_image> -o <output_svg> [-c <settings_json>]");
+        console.log("  [--catalog <catalog_json>]  snap colors to a real paint catalog");
+        console.log("  [--colors <N>]              number of paint regions (painting complexity)");
         process.exit(1);
     }
 
@@ -55,8 +58,85 @@ async function main() {
     }
 
     // Parse settings as plain JSON rather than require()-ing it, so a
-    // settings file can never execute arbitrary code.
-    const settings: CLISettings = JSON.parse(fs.readFileSync(configPath, "utf-8")) as CLISettings;
+    // settings file can never execute arbitrary code. Merge onto a real
+    // CLISettings instance so missing keys fall back to defaults rather than
+    // being undefined (a raw cast left partial configs behaving unpredictably).
+    const fileSettings = JSON.parse(fs.readFileSync(configPath, "utf-8")) as Partial<CLISettings>;
+    const settings: CLISettings = Object.assign(new CLISettings(), fileSettings);
+
+    // A value-flag given without a parseable value (e.g. `--coverage -1`, where
+    // minimist eats the negative as a flag) arrives as boolean `true`. Reject
+    // it explicitly — otherwise Number(true)===1 would silently slip through.
+    const requireValue = (name: string, val: unknown) => {
+        if (typeof val === "boolean") {
+            console.error(`--${name} requires a value (use --${name}=VALUE for negatives)`);
+            process.exit(1);
+        }
+    };
+
+    // Kit mode: snap generated colors to a real paint catalog.
+    let catalog: Catalog | null = null;
+    if (typeof args.catalog !== "undefined") {
+        requireValue("catalog", args.catalog);
+        let catalogPath: string = String(args.catalog);
+        if (!path.isAbsolute(catalogPath)) {
+            catalogPath = path.join(process.cwd(), catalogPath);
+        }
+        catalog = parseCatalog(fs.readFileSync(catalogPath, "utf-8"));
+        applyCatalogToSettings(settings, catalog);
+        console.log(`Using catalog "${catalog.name}" (${catalog.colors.length} colors)`);
+    }
+
+    // Painting complexity is decoupled from catalog size: --colors drives the
+    // cluster count; the catalog only controls the post-snap target set.
+    if (typeof args.colors !== "undefined") {
+        requireValue("colors", args.colors);
+        const n = Number(args.colors);
+        // Upper bound: k-means allocates/iterates k centroids per unique color;
+        // an unbounded --colors is a trivial CPU/memory kill, and a kit with
+        // hundreds of paint numbers is unpaintable anyway.
+        const MAX_COLORS = 256;
+        if (!Number.isInteger(n) || n < 1 || n > MAX_COLORS) {
+            console.error(`--colors must be an integer 1-${MAX_COLORS}, got "${args.colors}"`);
+            process.exit(1);
+        }
+        settings.kMeansNrOfClusters = n;
+    }
+
+    // Physical canvas size (cm) — drives the tube-count estimate now, and the
+    // print PDF in step 4. Format "WxH", default A2-ish 40x50.
+    let canvasWidthCm = 40;
+    let canvasHeightCm = 50;
+    if (typeof args["canvas-size"] !== "undefined") {
+        requireValue("canvas-size", args["canvas-size"]);
+        const m = String(args["canvas-size"]).match(/^(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)$/i);
+        if (!m) {
+            console.error(`--canvas-size must be "WxH" in cm, got "${args["canvas-size"]}"`);
+            process.exit(1);
+        }
+        canvasWidthCm = Number(m[1]);
+        canvasHeightCm = Number(m[2]);
+        // 0x0 would silently floor every tube to 1; an absurd size overflows.
+        if (canvasWidthCm <= 0 || canvasHeightCm <= 0 || canvasWidthCm > 1000 || canvasHeightCm > 1000) {
+            console.error(`--canvas-size dimensions must be between 0 and 1000 cm, got "${args["canvas-size"]}"`);
+            process.exit(1);
+        }
+    }
+    const canvasAreaCm2 = canvasWidthCm * canvasHeightCm;
+
+    // Tubes per cm² of painted area. This is a rough ESTIMATE (thin acrylic
+    // layer, one coat); overridable with --coverage. Tuning it against a real
+    // painted canvas is an explicit open question in the design doc.
+    let coverageConst = 0.0025; // ~1 tube per 400 cm²
+    if (typeof args.coverage !== "undefined") {
+        requireValue("coverage", args.coverage);
+        const cov = Number(args.coverage);
+        if (!Number.isFinite(cov) || cov <= 0) {
+            console.error(`--coverage must be a positive number, got "${args.coverage}"`);
+            process.exit(1);
+        }
+        coverageConst = cov;
+    }
 
     const img = await canvas.loadImage(imagePath);
     const c = canvas.createCanvas(img.width, img.height);
@@ -105,10 +185,11 @@ async function main() {
     const domImgData = imgData as unknown as ImageData;
     const domKmeansImgData = kmeansImgData as unknown as ImageData;
     const domCtx = ctx as unknown as CanvasRenderingContext2D;
+    const snapMeta: SnapMeta | null = catalog !== null ? new Map() : null;
     await ColorReducer.applyKMeansClustering(domImgData, domKmeansImgData, domCtx, settings, (kmeans) => {
         const progress = (100 - (kmeans.currentDeltaDistanceDifference > 100 ? 100 : kmeans.currentDeltaDistanceDifference)) / 100;
         ctxKmeans.putImageData(kmeansImgData, 0, 0);
-    });
+    }, snapMeta);
 
     const colormapResult = ColorReducer.createColorMap(domKmeansImgData);
 
@@ -158,6 +239,30 @@ async function main() {
         // progress
     });
 
+    // Per-color pixel frequency. Drives phantom filtering, the 1..N renumber,
+    // and area%. Computed before output so the renumber can label the SVG.
+    const colorFrequency: number[] = colormapResult.colorsByIndex.map(() => 0);
+    for (const facet of facetResult.facets) {
+        if (facet !== null) {
+            colorFrequency[facet.color] += facet.pointCount;
+        }
+    }
+
+    // Kit mode: stable remap raw color index -> 1..N over colors actually used
+    // (frequency > 0). Phantom colors (a centroid snapped to a paint whose
+    // facets were all removed) get no number and never reach the shopping
+    // list. Sorted by raw index so numbering is deterministic and the SAME map
+    // drives canvas labels, palette JSON and the shopping list.
+    const labelMap: Map<number, number> | null = catalog !== null ? new Map() : null;
+    if (labelMap !== null) {
+        colorFrequency
+            .map((f, i) => ({ f, i }))
+            .filter((x) => x.f > 0)
+            .map((x) => x.i)
+            .sort((a, b) => a - b)
+            .forEach((rawIndex, pos) => labelMap.set(rawIndex, pos + 1));
+    }
+
     for (const profile of settings.outputProfiles) {
         console.log("Generating output for " + profile.name);
 
@@ -166,7 +271,7 @@ async function main() {
         }
 
         const svgProfilePath = path.join(path.dirname(svgPath), path.basename(svgPath).substr(0, path.basename(svgPath).length - path.extname(svgPath).length) + "-" + profile.name) + "." + profile.filetype;
-        const svgString = await createSVG(facetResult, colormapResult.colorsByIndex, profile.svgSizeMultiplier, profile.svgFillFacets, profile.svgShowBorders, profile.svgShowLabels, profile.svgFontSize, profile.svgFontColor);
+        const svgString = await createSVG(facetResult, colormapResult.colorsByIndex, profile.svgSizeMultiplier, profile.svgFillFacets, profile.svgShowBorders, profile.svgShowLabels, profile.svgFontSize, profile.svgFontColor, null, labelMap);
 
         if (profile.filetype === "svg") {
             fs.writeFileSync(svgProfilePath, svgString);
@@ -184,17 +289,6 @@ async function main() {
     console.log("Generating palette info");
     const palettePath = path.join(path.dirname(svgPath), path.basename(svgPath).substr(0, path.basename(svgPath).length - path.extname(svgPath).length) + ".json");
 
-    const colorFrequency: number[] = [];
-    for (const color of colormapResult.colorsByIndex) {
-        colorFrequency.push(0);
-    }
-
-    for (const facet of facetResult.facets) {
-        if (facet !== null) {
-            colorFrequency[facet.color] += facet.pointCount;
-        }
-    }
-
     const colorAliasesByColor: { [key: string]: string } = {};
     for (const alias of Object.keys(settings.colorAliases)) {
         colorAliasesByColor[settings.colorAliases[alias].join(",")] = alias;
@@ -204,20 +298,143 @@ async function main() {
     // value throws on []); the totalFrequency check below guards divide-by-zero.
     const totalFrequency = colorFrequency.reduce((sum, val) => sum + val, 0);
 
+    // A snapped color is "out of gamut" when its worst-case match (largest
+    // CIE76 Lab distance of any cluster that snapped to it) exceeds this ΔE.
+    // Starting value, to be tuned against real photos vs real catalogs.
+    const OUT_OF_GAMUT_DELTA_E = 10;
+    const skuLookup = catalog !== null ? catalogBySku(catalog) : null;
+    const outOfGamutSkus: string[] = [];
+
+    // snapMeta is keyed by the snapped RGB string. Resolve a color to its
+    // catalog entry by SKU (the non-lossy path) — shared by the palette JSON
+    // and the shopping list so the two can't drift out of sync.
+    const resolveCatalogEntry = (rgb: RGB) => {
+        if (snapMeta === null || skuLookup === null) return null;
+        const meta = snapMeta.get(rgb.join(","));
+        if (!meta || meta.sku === null) return null;
+        return { sku: meta.sku, cat: skuLookup.get(meta.sku), distance: meta.distance };
+    };
+
+    // Catalog name/sku are user-supplied strings rendered into CSV/Markdown
+    // deliverables. Neutralize structural and formula-injection payloads.
+    const csvCell = (s: string) => {
+        let v = String(s).replace(/[\r\n]+/g, " ");
+        if (/^[=+\-@\t]/.test(v)) v = "'" + v; // defang spreadsheet formulas
+        return `"${v.replace(/"/g, '""')}"`;
+    };
+    const mdCell = (s: string) =>
+        String(s).replace(/[\r\n]+/g, " ").replace(/\|/g, "\\|");
+
     const paletteInfo = JSON.stringify(colormapResult.colorsByIndex.map((color, index) => {
-        return {
+        const entry: {
+            areaPercentage: number;
+            color: RGB;
+            colorAlias: string | undefined;
+            frequency: number;
+            index: number;
+            number?: number;
+            sku?: string;
+            name?: string;
+            snapDistance?: number;
+            outOfGamut?: boolean;
+        } = {
             areaPercentage: totalFrequency === 0 ? 0 : colorFrequency[index] / totalFrequency,
             color,
             colorAlias: colorAliasesByColor[color.join(",")],
             frequency: colorFrequency[index],
             index,
         };
+
+        // The kit's human-facing 1..N number (same map as canvas labels).
+        if (labelMap !== null && labelMap.has(index)) {
+            entry.number = labelMap.get(index);
+        }
+
+        // Catalog enrichment is keyed by sku via snapMeta — NOT by reverse
+        // RGB lookup (duplicate catalog RGBs are rejected at parse time).
+        if (catalog !== null) {
+            const r = resolveCatalogEntry(color);
+            if (r) {
+                entry.sku = r.sku;
+                entry.name = r.cat ? r.cat.name : undefined;
+                // colorAlias is reused as the sku to keep the palette JSON
+                // schema stable for existing consumers (the field name
+                // predates kit mode); `sku` is also emitted explicitly.
+                entry.colorAlias = r.sku;
+                entry.snapDistance = r.distance;
+                entry.outOfGamut = r.distance > OUT_OF_GAMUT_DELTA_E;
+                if (entry.outOfGamut && colorFrequency[index] > 0) {
+                    outOfGamutSkus.push(r.sku);
+                }
+            }
+        }
+        return entry;
     }), null, 2);
 
+    if (outOfGamutSkus.length > 0) {
+        console.warn(`Warning: ${outOfGamutSkus.length} color(s) are a poor catalog match ` +
+            `(ΔE > ${OUT_OF_GAMUT_DELTA_E}): ${outOfGamutSkus.join(", ")}. ` +
+            `The kit still generates; consider a richer catalog.`);
+    }
+
     fs.writeFileSync(palettePath, paletteInfo);
+
+    // Shopping list (kit mode only). One row per paint actually used, numbered
+    // by the same 1..N map as the canvas. Phantom colors (frequency 0) are
+    // excluded by construction — they have no labelMap entry.
+    if (catalog !== null && snapMeta !== null && skuLookup !== null && labelMap !== null) {
+        const toHex = (rgb: RGB) =>
+            "#" + rgb.map((v) => v.toString(16).padStart(2, "0")).join("");
+
+        const rows = colormapResult.colorsByIndex
+            .map((color, index) => ({ color, index }))
+            .filter((x) => labelMap.has(x.index) && colorFrequency[x.index] > 0)
+            .map((x) => {
+                const r = resolveCatalogEntry(x.color);
+                const sku = r ? r.sku : "?";
+                const cat = r ? r.cat : undefined;
+                const areaPct = totalFrequency === 0 ? 0 : colorFrequency[x.index] / totalFrequency;
+                const tubes = Math.max(1, Math.ceil(areaPct * canvasAreaCm2 * coverageConst));
+                return {
+                    number: labelMap.get(x.index)!,
+                    sku,
+                    name: cat ? cat.name : "(unknown)",
+                    hex: toHex(cat ? cat.rgb : x.color),
+                    areaPct,
+                    tubes,
+                };
+            })
+            .sort((a, b) => a.number - b.number);
+
+        const base = path.join(
+            path.dirname(svgPath),
+            path.basename(svgPath, path.extname(svgPath)),
+        );
+
+        const csv = ["number,sku,name,hex,areaPercentage,tubes"]
+            .concat(rows.map((r) =>
+                `${r.number},${csvCell(r.sku)},${csvCell(r.name)},${r.hex},${r.areaPct.toFixed(6)},${r.tubes}`))
+            .join("\n") + "\n";
+        fs.writeFileSync(base + "-shopping-list.csv", csv);
+
+        const md = [
+            `# Shopping list — ${mdCell(catalog.name)}`,
+            "",
+            `Canvas ${canvasWidthCm}x${canvasHeightCm} cm. Tube counts are a rough estimate ` +
+            `(coverage ${coverageConst} tubes/cm², override with \`--coverage\`).`,
+            "",
+            "| # | SKU | Paint | Swatch | Area % | Tubes |",
+            "| --- | --- | --- | --- | ---: | ---: |",
+        ].concat(rows.map((r) =>
+            `| ${r.number} | ${mdCell(r.sku)} | ${mdCell(r.name)} | \`${r.hex}\` | ${(r.areaPct * 100).toFixed(1)}% | ${r.tubes} |`))
+            .join("\n") + "\n";
+        fs.writeFileSync(base + "-shopping-list.md", md);
+
+        console.log(`Shopping list: ${rows.length} paints -> ${base}-shopping-list.{csv,md}`);
+    }
 }
 
-async function createSVG(facetResult: FacetResult, colorsByIndex: RGB[], sizeMultiplier: number, fill: boolean, stroke: boolean, addColorLabels: boolean, fontSize: number = 60, fontColor: string = "black", onUpdate: ((progress: number) => void) | null = null) {
+async function createSVG(facetResult: FacetResult, colorsByIndex: RGB[], sizeMultiplier: number, fill: boolean, stroke: boolean, addColorLabels: boolean, fontSize: number = 60, fontColor: string = "black", onUpdate: ((progress: number) => void) | null = null, labelMap: Map<number, number> | null = null) {
 
     let svgString = "";
     const xmlns = "http://www.w3.org/2000/svg";
@@ -305,10 +522,15 @@ async function createSVG(facetResult: FacetResult, colorsByIndex: RGB[], sizeMul
                 //     </svg>
                 //    </g>`;
 
-                const nrOfDigits = (f.color + "").length;
+                // Kit mode renders the human-facing 1..N number; otherwise the
+                // raw zero-based color index (unchanged legacy behavior).
+                const labelText = labelMap !== null && labelMap.has(f.color)
+                    ? labelMap.get(f.color)!
+                    : f.color;
+                const nrOfDigits = (labelText + "").length;
                 const svgLabelString = `<g class="label" transform="translate(${labelOffsetX},${labelOffsetY})">
                                         <svg width="${labelWidth}" height="${labelHeight}" overflow="visible" viewBox="-50 -50 100 100" preserveAspectRatio="xMidYMid meet">
-                                            <text font-family="Tahoma" font-size="${(fontSize / nrOfDigits)}" dominant-baseline="middle" text-anchor="middle" fill="${fontColor}">${f.color}</text>
+                                            <text font-family="Tahoma" font-size="${(fontSize / nrOfDigits)}" dominant-baseline="middle" text-anchor="middle" fill="${fontColor}">${labelText}</text>
                                         </svg>
                                        </g>`;
 
@@ -325,5 +547,9 @@ async function createSVG(facetResult: FacetResult, colorsByIndex: RGB[], sizeMul
 main().then(() => {
     console.log("Finished");
 }).catch((err) => {
-    console.error("Error: " + err.name + " " + err.message + " " + err.stack);
+    // Surface the message clearly and exit non-zero so callers (CI, scripts,
+    // future kit-batch) can detect failure. Without this the process exited 0
+    // on any error, including a malformed catalog.
+    console.error("Error: " + err.message);
+    process.exit(1);
 });

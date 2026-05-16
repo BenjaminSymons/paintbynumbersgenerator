@@ -1,0 +1,30 @@
+{
+  "id": "generic-acrylic-24",
+  "name": "Generic 24-colour acrylic set (EXAMPLE — approximate, not a real brand)",
+  "colors": [
+    { "sku": "G01", "name": "Titanium White", "rgb": [255, 255, 255] },
+    { "sku": "G02", "name": "Mars Black", "rgb": [20, 20, 20] },
+    { "sku": "G03", "name": "Payne's Grey", "rgb": [83, 92, 104] },
+    { "sku": "G04", "name": "Neutral Grey", "rgb": [140, 140, 140] },
+    { "sku": "G05", "name": "Primary Red", "rgb": [200, 30, 30] },
+    { "sku": "G06", "name": "Crimson", "rgb": [150, 20, 50] },
+    { "sku": "G07", "name": "Burnt Sienna", "rgb": [138, 64, 38] },
+    { "sku": "G08", "name": "Burnt Umber", "rgb": [92, 56, 38] },
+    { "sku": "G09", "name": "Yellow Ochre", "rgb": [196, 152, 60] },
+    { "sku": "G10", "name": "Primary Yellow", "rgb": [240, 210, 40] },
+    { "sku": "G11", "name": "Cadmium Orange", "rgb": [230, 120, 30] },
+    { "sku": "G12", "name": "Lemon Yellow", "rgb": [245, 235, 120] },
+    { "sku": "G13", "name": "Sap Green", "rgb": [70, 120, 50] },
+    { "sku": "G14", "name": "Primary Green", "rgb": [40, 150, 70] },
+    { "sku": "G15", "name": "Viridian", "rgb": [30, 110, 95] },
+    { "sku": "G16", "name": "Phthalo Green", "rgb": [20, 90, 70] },
+    { "sku": "G17", "name": "Primary Blue", "rgb": [30, 60, 180] },
+    { "sku": "G18", "name": "Cerulean Blue", "rgb": [60, 130, 200] },
+    { "sku": "G19", "name": "Ultramarine", "rgb": [40, 50, 130] },
+    { "sku": "G20", "name": "Prussian Blue", "rgb": [25, 50, 75] },
+    { "sku": "G21", "name": "Light Blue", "rgb": [120, 180, 220] },
+    { "sku": "G22", "name": "Violet", "rgb": [110, 50, 140] },
+    { "sku": "G23", "name": "Magenta", "rgb": [200, 40, 130] },
+    { "sku": "G24", "name": "Pink", "rgb": [230, 150, 170] }
+  ]
+}
