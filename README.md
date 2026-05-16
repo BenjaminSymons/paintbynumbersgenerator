@@ -100,6 +100,43 @@ The CLI version also outputs a json file that gives more information about the p
 
 The CLI version is useful if you want to automate the process into your own scripts.
 
+#### Kit mode: snap to a real paint catalog
+
+By default the generated colors are arbitrary RGB values. Pass a paint catalog
+and the colors snap to real, purchasable paints, with canvas numbers and a
+shopping list to match:
+
+```
+node dist/cli.js -i input.png -o output.svg \
+  --catalog src-cli/catalogs/generic-acrylic-24.json \
+  --colors 12 --canvas-size 40x50
+```
+
+| Flag | Description |
+| ---- | ----------- |
+| `--catalog <file>` | A JSON catalog of `{ sku, name, rgb }` paints. Generated colors snap to the nearest catalog paint. A bundled `src-cli/catalogs/generic-acrylic-24.json` is included as a clearly labelled example — supply your own for real brand SKUs. |
+| `--colors <N>` | Number of distinct paint regions (1-256). Controls painting complexity, independent of how many colors the catalog has. |
+| `--canvas-size <WxH>` | Physical canvas size in cm (e.g. `40x50`). Drives the paint-quantity estimate. Default `40x50`. |
+| `--coverage <tubes/cm²>` | Paint needed per cm² of painted area. Default `0.0025` (roughly one tube per 400 cm²). It is a rough estimate — override it to match your paint and style. |
+
+For negative or ambiguous values use `--flag=VALUE` (e.g. `--coverage=0.001`),
+otherwise the value can be parsed as the next flag.
+
+When `--catalog` is supplied, the CLI also writes two shopping-list files next
+to the output (`output-shopping-list.csv` and `output-shopping-list.md`). Each
+row is one paint actually used, sharing the same `1..N` numbering as the canvas
+labels:
+
+| # | SKU | Paint | Swatch | Area % | Tubes |
+| - | --- | ----- | ------ | -----: | ----: |
+| 1 | GA-01 | Titanium White | `#f5f5f0` | 22.4% | 3 |
+| 2 | GA-14 | Ultramarine Blue | `#1f2f8f` | 8.1% | 1 |
+
+Paints that no catalog color matches well are flagged out of gamut with a
+console warning; the kit still generates. Unused paints are filtered out, so
+the numbering has no gaps and the palette JSON gains `number`, `sku`, `name`,
+`snapDistance`, and `outOfGamut` fields in kit mode.
+
 ## Screenshots
 
 ![Screenshot](https://i.imgur.com/6uHm78x.png])

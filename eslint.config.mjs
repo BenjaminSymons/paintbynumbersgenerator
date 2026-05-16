@@ -10,6 +10,7 @@ export default tseslint.config(
       "scripts/main.js.map",
       "scripts/lib/**",
       "dist/**",
+      "test-output/**",
       "node_modules/**",
     ],
   },
