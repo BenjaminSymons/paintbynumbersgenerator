@@ -200,11 +200,13 @@ async function main() {
         colorAliasesByColor[settings.colorAliases[alias].join(",")] = alias;
     }
 
-    const totalFrequency = colorFrequency.reduce((sum, val) => sum + val);
+    // Initial value 0 guards the empty-array case (reduce with no initial
+    // value throws on []); the totalFrequency check below guards divide-by-zero.
+    const totalFrequency = colorFrequency.reduce((sum, val) => sum + val, 0);
 
     const paletteInfo = JSON.stringify(colormapResult.colorsByIndex.map((color, index) => {
         return {
-            areaPercentage: colorFrequency[index] / totalFrequency,
+            areaPercentage: totalFrequency === 0 ? 0 : colorFrequency[index] / totalFrequency,
             color,
             colorAlias: colorAliasesByColor[color.join(",")],
             frequency: colorFrequency[index],
