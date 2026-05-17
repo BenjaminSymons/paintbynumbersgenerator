@@ -62,9 +62,11 @@ image → k-means color reduction → facet creation → facet reduction
 
 The stage *modules* are shared, but the code that *sequences* them is duplicated:
 
-- **Web**: `src/main.ts` + `src/gui.ts` (jQuery + materialize-css), orchestrated
-  by `GUIProcessManager.process()` in `src/guiprocessmanager.ts`. Bundled to
-  `scripts/main.js`, loaded by `index.html`.
+- **Web**: `src/main.ts` + `src/gui.ts` (jQuery + Materialize **JS** for Tabs
+  and Tooltip only — the Materialize CSS was replaced by a custom design
+  system in `styles/main.css`), orchestrated by `GUIProcessManager.process()`
+  in `src/guiprocessmanager.ts`. Bundled to `scripts/main.js`, loaded by
+  `index.html`.
 - **CLI**: `src-cli/main.ts` — the same sequence inlined into one `main()`.
   Bundled to `dist/cli.js` (the `paint-by-numbers-generator` bin).
 

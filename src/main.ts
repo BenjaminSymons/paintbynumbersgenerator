@@ -8,25 +8,47 @@ $(document).ready(function () {
 
     const clip = new Clipboard("canvas", true);
 
+    function drawImageFile(file: File) {
+        const reader = new FileReader();
+        reader.onloadend = function () {
+            const img = document.createElement("img");
+            img.onload = () => {
+                const c = document.getElementById("canvas") as HTMLCanvasElement;
+                const ctx = c.getContext("2d")!;
+                c.width = img.naturalWidth;
+                c.height = img.naturalHeight;
+                ctx.drawImage(img, 0, 0);
+            };
+            img.onerror = () => {
+                alert("Unable to load image");
+            }
+            img.src = <string>reader.result;
+        }
+        reader.readAsDataURL(file);
+    }
+
     $("#file").change(function (ev) {
         const files = (<HTMLInputElement>$("#file").get(0)).files;
         if (files !== null && files.length > 0) {
-            const reader = new FileReader();
-            reader.onloadend = function () {
-                const img = document.createElement("img");
-                img.onload = () => {
-                    const c = document.getElementById("canvas") as HTMLCanvasElement;
-                    const ctx = c.getContext("2d")!;
-                    c.width = img.naturalWidth;
-                    c.height = img.naturalHeight;
-                    ctx.drawImage(img, 0, 0);
-                };
-                img.onerror = () => {
-                    alert("Unable to load image");
-                }
-                img.src = <string>reader.result;
-            }
-            reader.readAsDataURL(files[0]);
+            drawImageFile(files[0]);
+        }
+    });
+
+    $("#btnBrowse").click(() => $("#file").trigger("click"));
+
+    const dropzone = document.getElementById("dropzone")!;
+    ["dragenter", "dragover"].forEach((evt) => dropzone.addEventListener(evt, (e) => {
+        e.preventDefault();
+        dropzone.classList.add("dragover");
+    }));
+    ["dragleave", "drop"].forEach((evt) => dropzone.addEventListener(evt, (e) => {
+        e.preventDefault();
+        dropzone.classList.remove("dragover");
+    }));
+    dropzone.addEventListener("drop", (e: DragEvent) => {
+        const files = e.dataTransfer?.files;
+        if (files && files.length > 0 && files[0].type.startsWith("image/")) {
+            drawImageFile(files[0]);
         }
     });
 
@@ -59,4 +81,13 @@ $(document).ready(function () {
     $("#lnkTrivial").click(() => { loadExample("imgTrivial"); return false; });
     $("#lnkSmall").click(() => { loadExample("imgSmall"); return false; });
     $("#lnkMedium").click(() => { loadExample("imgMedium"); return false; });
+
+    // The primary/download controls are role="button" anchors with no href, so
+    // they are not natively keyboard-activatable. Map Enter/Space to a click.
+    $("[role=button]").on("keydown", function (ev) {
+        if (ev.key === "Enter" || ev.key === " ") {
+            ev.preventDefault();
+            $(this).trigger("click");
+        }
+    });
 });

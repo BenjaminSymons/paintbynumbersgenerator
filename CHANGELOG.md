@@ -4,6 +4,35 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project uses a
 four-digit `MAJOR.MINOR.PATCH.MICRO` version in the `VERSION` file.
 
+## [2.4.0.0] - 2026-05-17
+
+### Changed
+- **Redesigned web UI.** The browser app moved off the default Materialize
+  look to a self-contained design system: a centered card on a light page,
+  a clear title and subtitle, sectioned options with headings and dividers,
+  segmented controls for mutually-exclusive choices, and a single accent
+  color. Body text uses a modern system/Inter font stack.
+- **Pipeline progress is now a stepper.** The seven processing stages render
+  as a numbered horizontal stepper with connecting lines, a spinner on the
+  active stage, and a checkmark on completed stages. It collapses to a
+  vertical list on narrow screens.
+- **Output preview scales to fit.** The generated web SVG now carries a
+  `viewBox`, so the result preview scales to its container instead of
+  rendering at the raw size-multiplier resolution (previously it showed a
+  single zoomed-in facet). The preview box matches the other result tabs
+  (fit-to-width, fixed-height, scrollable) so pipeline stages compare at the
+  same size. Saved SVG and PNG/JPG exports are unchanged (`viewBox` equals
+  width/height).
+
+### Added
+- **Drag-and-drop upload.** Images can be dropped onto a dedicated upload
+  zone (paste and browse still work); example images are shown as thumbnail
+  chips, and a friendly empty state appears in the results area before
+  processing.
+- **Keyboard and accessibility.** Visible focus rings throughout, Enter/Space
+  activation for the primary and download buttons, a page title and meta
+  description, a favicon, and a footer with a source link.
+
 ## [2.3.0.0] - 2026-05-17
 
 ### Added
