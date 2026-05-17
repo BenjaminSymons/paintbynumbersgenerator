@@ -442,7 +442,7 @@ async function createSVG(facetResult: FacetResult, colorsByIndex: RGB[], sizeMul
     const svgWidth = sizeMultiplier * facetResult.width;
     const svgHeight = sizeMultiplier * facetResult.height;
     svgString += `<?xml version="1.0" standalone="no"?>
-                  <svg width="${svgWidth}" height="${svgHeight}" xmlns="${xmlns}">`;
+                  <svg width="${svgWidth}" height="${svgHeight}" viewBox="0 0 ${svgWidth} ${svgHeight}" xmlns="${xmlns}">`;
 
     for (const f of facetResult.facets) {
 

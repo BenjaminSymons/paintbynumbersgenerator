@@ -296,8 +296,11 @@ export class GUIProcessManager {
     public static async createSVG(facetResult: FacetResult, colorsByIndex: RGB[], sizeMultiplier: number, fill: boolean, stroke: boolean, addColorLabels: boolean, fontSize: number = 50, fontColor: string = "black", onUpdate: ((progress: number) => void) | null = null) {
         const xmlns = "http://www.w3.org/2000/svg";
         const svg = document.createElementNS(xmlns, "svg");
-        svg.setAttribute("width", sizeMultiplier * facetResult.width + "");
-        svg.setAttribute("height", sizeMultiplier * facetResult.height + "");
+        const svgWidth = sizeMultiplier * facetResult.width;
+        const svgHeight = sizeMultiplier * facetResult.height;
+        svg.setAttribute("width", svgWidth + "");
+        svg.setAttribute("height", svgHeight + "");
+        svg.setAttribute("viewBox", "0 0 " + svgWidth + " " + svgHeight);
 
         let count = 0;
         for (const f of facetResult.facets) {
