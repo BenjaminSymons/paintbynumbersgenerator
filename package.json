@@ -40,6 +40,8 @@
   "dependencies": {
     "canvas": "^3.0.0",
     "minimist": "^1.2.8",
-    "sharp": "^0.33.0"
+    "pdfkit": "^0.18.0",
+    "sharp": "^0.33.0",
+    "svg-to-pdfkit": "^0.1.8"
   }
 }

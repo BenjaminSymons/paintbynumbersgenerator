@@ -1,4 +1,5 @@
 import * as canvas from "canvas";
+import { createHash } from "crypto";
 import * as fs from "fs";
 import minimist from "minimist";
 import * as path from "path";
@@ -13,6 +14,7 @@ import { FacetCreator } from "../src/facetCreator";
 import { FacetLabelPlacer } from "../src/facetLabelPlacer";
 import { FacetResult } from "../src/facetmanagement";
 import { FacetReducer } from "../src/facetReducer";
+import { buildKitPdf, LegendRow } from "./kitpdf";
 import { Settings } from "../src/settings";
 import { Point } from "../src/structs/point";
 
@@ -36,18 +38,46 @@ class CLISettings extends Settings {
 
 }
 
-async function main() {
-    const args = minimist(process.argv.slice(2));
-    const imagePath = args.i;
-    const svgPath = args.o;
+// Resolved, validated options shared by single-image and batch runs. Parsed
+// once up front so a batch reuses one settings + catalog object across images.
+interface KitOptions {
+    settings: CLISettings;
+    catalog: Catalog | null;
+    canvasWidthCm: number;
+    canvasHeightCm: number;
+    coverageConst: number;
+    dpi: number;
+    paper: { wCm: number; hCm: number };
+    paperName: string;
+    // Batch silences the per-stage progress chatter (one line per image only).
+    quiet: boolean;
+}
 
-    if (typeof imagePath === "undefined" || typeof svgPath === "undefined") {
-        console.log("Usage: exe -i <input_image> -o <output_svg> [-c <settings_json>]");
-        console.log("  [--catalog <catalog_json>]  snap colors to a real paint catalog");
-        console.log("  [--colors <N>]              number of paint regions (painting complexity)");
-        process.exit(1);
-    }
+interface ColorBOMEntry {
+    number: number;
+    sku: string;
+    name: string;
+    hex: string;
+    areaPercentage: number;
+    tubes: number;
+}
 
+interface KitResult {
+    // sha256 over the deterministic kit artifacts (palette JSON + shopping
+    // list + numbered canvas SVG). The spike proved these are byte-identical
+    // across runs in the same environment; the PDF is deliberately excluded
+    // (pdfkit embeds a timestamp/file-id, so it is visually-equivalent only).
+    sha256: string;
+    // null when not in kit mode (no --catalog).
+    colorBOM: ColorBOMEntry[] | null;
+}
+
+const PAPERS: { [k: string]: { wCm: number; hCm: number } } = {
+    a4: { wCm: 21.0, hCm: 29.7 },
+    letter: { wCm: 21.59, hCm: 27.94 },
+};
+
+function parseKitOptions(args: minimist.ParsedArgs): KitOptions {
     let configPath = args.c;
     if (typeof configPath === "undefined") {
         configPath = path.join(process.cwd(), "settings.json");
@@ -103,8 +133,8 @@ async function main() {
         settings.kMeansNrOfClusters = n;
     }
 
-    // Physical canvas size (cm) — drives the tube-count estimate now, and the
-    // print PDF in step 4. Format "WxH", default A2-ish 40x50.
+    // Physical canvas size (cm) — drives the tube-count estimate and the
+    // print PDF. Format "WxH", default A2-ish 40x50.
     let canvasWidthCm = 40;
     let canvasHeightCm = 50;
     if (typeof args["canvas-size"] !== "undefined") {
@@ -122,7 +152,6 @@ async function main() {
             process.exit(1);
         }
     }
-    const canvasAreaCm2 = canvasWidthCm * canvasHeightCm;
 
     // Tubes per cm² of painted area. This is a rough ESTIMATE (thin acrylic
     // layer, one coat); overridable with --coverage. Tuning it against a real
@@ -137,6 +166,53 @@ async function main() {
         }
         coverageConst = cov;
     }
+
+    // Print resolution for the kit PDF's rasterized cover preview, and the
+    // coarse-printer floor of the legibility guard. Vector pages don't depend
+    // on it; only the cover raster and the min-feature check do.
+    let dpi = 300;
+    if (typeof args.dpi !== "undefined") {
+        requireValue("dpi", args.dpi);
+        const d = Number(args.dpi);
+        if (!Number.isInteger(d) || d < 72 || d > 1200) {
+            console.error(`--dpi must be an integer 72-1200, got "${args.dpi}"`);
+            process.exit(1);
+        }
+        dpi = d;
+    }
+
+    let paperName = "A4";
+    if (typeof args.paper !== "undefined") {
+        requireValue("paper", args.paper);
+        paperName = String(args.paper);
+        if (!PAPERS[paperName.toLowerCase()]) {
+            console.error(`--paper must be one of ${Object.keys(PAPERS).map((p) => p.toUpperCase()).join(", ")}, got "${args.paper}"`);
+            process.exit(1);
+        }
+    }
+
+    return {
+        settings,
+        catalog,
+        canvasWidthCm,
+        canvasHeightCm,
+        coverageConst,
+        dpi,
+        paper: PAPERS[paperName.toLowerCase()],
+        paperName,
+        quiet: false,
+    };
+}
+
+async function generateKit(imagePath: string, svgPath: string, opts: KitOptions): Promise<KitResult> {
+    const { settings, catalog, canvasWidthCm, canvasHeightCm, coverageConst, dpi, paper, paperName } = opts;
+    const canvasAreaCm2 = canvasWidthCm * canvasHeightCm;
+    const log = opts.quiet ? (_m: string) => { /* batch: per-image line only */ } : (m: string) => console.log(m);
+
+    // Holders for the deterministic artifacts hashed into the manifest.
+    let kitCsv = "";
+    let kitCanvasSvg = "";
+    let kitColorBOM: ColorBOMEntry[] | null = null;
 
     const img = await canvas.loadImage(imagePath);
     const c = canvas.createCanvas(img.width, img.height);
@@ -170,10 +246,10 @@ async function main() {
         ctx.drawImage(tempCanvas, 0, 0, width, height);
         imgData = ctx.getImageData(0, 0, c.width, c.height);
 
-        console.log(`Resized image to ${width}x${height}`);
+        log(`Resized image to ${width}x${height}`);
     }
 
-    console.log("Running k-means clustering");
+    log("Running k-means clustering");
     const cKmeans = canvas.createCanvas(imgData.width, imgData.height);
     const ctxKmeans = cKmeans.getContext("2d")!;
     ctxKmeans.fillStyle = "white";
@@ -195,27 +271,27 @@ async function main() {
 
     let facetResult = new FacetResult();
     if (typeof settings.narrowPixelStripCleanupRuns === "undefined" || settings.narrowPixelStripCleanupRuns === 0) {
-        console.log("Creating facets");
+        log("Creating facets");
         facetResult = await FacetCreator.getFacets(imgData.width, imgData.height, colormapResult.imgColorIndices, (progress) => {
             // progress
         });
 
-        console.log("Reducing facets");
+        log("Reducing facets");
         await FacetReducer.reduceFacets(settings.removeFacetsSmallerThanNrOfPoints, settings.removeFacetsFromLargeToSmall, settings.maximumNumberOfFacets, colormapResult.colorsByIndex, facetResult, colormapResult.imgColorIndices, (progress) => {
             // progress
         });
     } else {
         for (let run = 0; run < settings.narrowPixelStripCleanupRuns; run++) {
-            console.log("Removing narrow pixels run #" + (run + 1));
+            log("Removing narrow pixels run #" + (run + 1));
             // clean up narrow pixel strips
             await ColorReducer.processNarrowPixelStripCleanup(colormapResult);
 
-            console.log("Creating facets");
+            log("Creating facets");
             facetResult = await FacetCreator.getFacets(imgData.width, imgData.height, colormapResult.imgColorIndices, (progress) => {
                 // progress
             });
 
-            console.log("Reducing facets");
+            log("Reducing facets");
             await FacetReducer.reduceFacets(settings.removeFacetsSmallerThanNrOfPoints, settings.removeFacetsFromLargeToSmall, settings.maximumNumberOfFacets, colormapResult.colorsByIndex, facetResult, colormapResult.imgColorIndices, (progress) => {
                 // progress
             });
@@ -224,17 +300,17 @@ async function main() {
         }
     }
 
-    console.log("Build border paths");
+    log("Build border paths");
     await FacetBorderTracer.buildFacetBorderPaths(facetResult, (progress) => {
         // progress
     });
 
-    console.log("Build border path segments");
+    log("Build border path segments");
     await FacetBorderSegmenter.buildFacetBorderSegments(facetResult, settings.nrOfTimesToHalveBorderSegments, (progress) => {
         // progress
     });
 
-    console.log("Determine label placement");
+    log("Determine label placement");
     await FacetLabelPlacer.buildFacetLabelBounds(facetResult, (progress) => {
         // progress
     });
@@ -264,7 +340,7 @@ async function main() {
     }
 
     for (const profile of settings.outputProfiles) {
-        console.log("Generating output for " + profile.name);
+        log("Generating output for " + profile.name);
 
         if (typeof profile.filetype === "undefined") {
             profile.filetype = "svg";
@@ -286,7 +362,7 @@ async function main() {
         }
     }
 
-    console.log("Generating palette info");
+    log("Generating palette info");
     const palettePath = path.join(path.dirname(svgPath), path.basename(svgPath).substr(0, path.basename(svgPath).length - path.extname(svgPath).length) + ".json");
 
     const colorAliasesByColor: { [key: string]: string } = {};
@@ -372,7 +448,7 @@ async function main() {
     }), null, 2);
 
     if (outOfGamutSkus.length > 0) {
-        console.warn(`Warning: ${outOfGamutSkus.length} color(s) are a poor catalog match ` +
+        log(`Warning: ${outOfGamutSkus.length} color(s) are a poor catalog match ` +
             `(ΔE > ${OUT_OF_GAMUT_DELTA_E}): ${outOfGamutSkus.join(", ")}. ` +
             `The kit still generates; consider a richer catalog.`);
     }
@@ -430,19 +506,89 @@ async function main() {
             .join("\n") + "\n";
         fs.writeFileSync(base + "-shopping-list.md", md);
 
-        console.log(`Shopping list: ${rows.length} paints -> ${base}-shopping-list.{csv,md}`);
+        kitCsv = csv;
+        kitColorBOM = rows.map((r) => ({
+            number: r.number,
+            sku: r.sku,
+            name: r.name,
+            hex: r.hex,
+            areaPercentage: r.areaPct,
+            tubes: r.tubes,
+        }));
+
+        log(`Shopping list: ${rows.length} paints -> ${base}-shopping-list.{csv,md}`);
+
+        // ---- Print-ready kit PDF (step 4) --------------------------------
+        // Legibility guard: a hand-painted number needs ~4 mm; the printer
+        // also can't reproduce a feature finer than one dot. The guard floor
+        // is the larger of the two, converted to image pixels so createSVG
+        // (which sees labelBounds in image-pixel space) can apply it.
+        const MIN_LABEL_MM = 4;
+        const imgPxPerCm = facetResult.width / canvasWidthCm;
+        const printerDotCm = 2.54 / dpi;
+        const minFeatureCm = Math.max(MIN_LABEL_MM / 10, printerDotCm);
+        const minLabelPx = minFeatureCm * imgPxPerCm;
+
+        // Numbered canvas: borders + guarded labels, no fill (paint-by-swatch
+        // regions stay outlined even where the number is suppressed).
+        const canvasSvg = await createSVG(facetResult, colormapResult.colorsByIndex,
+            3, false, true, true, 60, "#000", null, labelMap, minLabelPx);
+        fs.writeFileSync(base + "-canvas.svg", canvasSvg);
+        kitCanvasSvg = canvasSvg;
+
+        // Colored cover preview (filled, no borders/labels), rasterized.
+        const coverSvg = await createSVG(facetResult, colormapResult.colorsByIndex,
+            3, true, false, false, 60, "#000", null, labelMap);
+        const coverPng = await sharp(Buffer.from(coverSvg))
+            .resize({ width: Math.min(3 * facetResult.width, 2000), withoutEnlargement: true })
+            .png().toBuffer();
+        fs.writeFileSync(base + "-cover.png", coverPng);
+
+        const legend: LegendRow[] = rows.map((r) => ({
+            number: r.number, sku: r.sku, name: r.name, hex: r.hex,
+        }));
+
+        const pdfPath = base + "-kit.pdf";
+        const kit = await buildKitPdf({
+            outPath: pdfPath,
+            canvasSvg,
+            coverPng,
+            legend,
+            catalogName: catalog.name,
+            canvasWidthCm,
+            canvasHeightCm,
+            paperWidthCm: paper.wCm,
+            paperHeightCm: paper.hCm,
+        });
+        log(`Kit PDF: ${kit.pages} pages (${kit.cols}x${kit.rows} canvas tiles on ${paperName}) -> ${pdfPath}`);
     }
+
+    // Hash only the proven-deterministic artifacts (see KitResult). Empty
+    // strings in non-kit mode still hash stably; colorBOM stays null there.
+    const sha256 = createHash("sha256")
+        .update(paletteInfo).update(kitCsv).update(kitCanvasSvg)
+        .digest("hex");
+    return { sha256, colorBOM: kitColorBOM };
 }
 
-async function createSVG(facetResult: FacetResult, colorsByIndex: RGB[], sizeMultiplier: number, fill: boolean, stroke: boolean, addColorLabels: boolean, fontSize: number = 60, fontColor: string = "black", onUpdate: ((progress: number) => void) | null = null, labelMap: Map<number, number> | null = null) {
+// `minLabelPx` is the print-legibility guard (kit mode): a facet whose label
+// box is smaller than this many image pixels in either dimension is too small
+// to carry a readable hand-painted number at the chosen physical canvas size,
+// so its in-facet number is suppressed (the region keeps its fill/border and
+// is recovered from the swatch legend). This is print-space and distinct from
+// the pixel-space `removeFacetsSmallerThanNrOfPoints` facet removal. 0 = off.
+async function createSVG(facetResult: FacetResult, colorsByIndex: RGB[], sizeMultiplier: number, fill: boolean, stroke: boolean, addColorLabels: boolean, fontSize: number = 60, fontColor: string = "black", onUpdate: ((progress: number) => void) | null = null, labelMap: Map<number, number> | null = null, minLabelPx: number = 0) {
 
     let svgString = "";
     const xmlns = "http://www.w3.org/2000/svg";
 
     const svgWidth = sizeMultiplier * facetResult.width;
     const svgHeight = sizeMultiplier * facetResult.height;
+    // A `viewBox` is required for the PDF step: svg-to-pdfkit scales by the
+    // viewBox, and the kit canvas must map to a real physical size. The legacy
+    // SVG had none (pixel dims only); adding it is backward-compatible.
     svgString += `<?xml version="1.0" standalone="no"?>
-                  <svg width="${svgWidth}" height="${svgHeight}" xmlns="${xmlns}">`;
+                  <svg width="${svgWidth}" height="${svgHeight}" viewBox="0 0 ${svgWidth} ${svgHeight}" xmlns="${xmlns}">`;
 
     for (const f of facetResult.facets) {
 
@@ -508,7 +654,8 @@ async function createSVG(facetResult: FacetResult, colorsByIndex: RGB[], sizeMul
 
             // add the color labels if necessary. I mean, this is the whole idea behind the paint by numbers part
             // so I don't know why you would hide them
-            if (addColorLabels) {
+            if (addColorLabels &&
+                !(minLabelPx > 0 && Math.min(f.labelBounds.width, f.labelBounds.height) < minLabelPx)) {
 
                 const labelOffsetX = f.labelBounds.minX * sizeMultiplier;
                 const labelOffsetY = f.labelBounds.minY * sizeMultiplier;
@@ -542,6 +689,151 @@ async function createSVG(facetResult: FacetResult, colorsByIndex: RGB[], sizeMul
     svgString += `</svg>`;
 
     return svgString;
+}
+
+// Image extensions node-canvas can decode. Anything else in a batch folder
+// (including the manifest of a previous run) is skipped, not an error.
+const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".bmp"]);
+
+interface ManifestImageOk {
+    file: string;
+    status: "ok";
+    sha256: string;
+    colorBOM: ColorBOMEntry[] | null;
+}
+interface ManifestImageError {
+    file: string;
+    status: "error";
+    error: string;
+}
+
+async function runBatch(args: minimist.ParsedArgs): Promise<void> {
+    let inputDir = args._[1];
+    let outputDir = args._[2];
+    if (typeof inputDir !== "string" || typeof outputDir !== "string") {
+        console.error("Usage: kit-batch <input-dir> <output-dir> [-c <settings_json>]");
+        console.error("  --catalog <catalog_json> is required (kit-batch produces paint kits)");
+        console.error("  [--colors N] [--canvas-size WxH] [--paper A4|Letter] [--dpi N] [--coverage n]");
+        process.exit(1);
+    }
+    if (!path.isAbsolute(inputDir)) inputDir = path.join(process.cwd(), inputDir);
+    if (!path.isAbsolute(outputDir)) outputDir = path.join(process.cwd(), outputDir);
+
+    const opts = parseKitOptions(args);
+    if (opts.catalog === null) {
+        console.error("kit-batch requires --catalog (it produces paint kits, not bare SVGs)");
+        process.exit(1);
+    }
+
+    if (!fs.existsSync(inputDir) || !fs.statSync(inputDir).isDirectory()) {
+        console.error(`input dir not found: ${inputDir}`);
+        process.exit(1);
+    }
+
+    // Sorted filename order → deterministic processing AND a deterministic
+    // manifest (entries are appended in this order).
+    const files = fs.readdirSync(inputDir, { withFileTypes: true })
+        .filter((d) => d.isFile() && IMAGE_EXTS.has(path.extname(d.name).toLowerCase()))
+        .map((d) => d.name)
+        .sort();
+    if (files.length === 0) {
+        console.error(`no images (${[...IMAGE_EXTS].join(", ")}) in ${inputDir}`);
+        process.exit(1);
+    }
+
+    fs.mkdirSync(outputDir, { recursive: true });
+
+    const images: (ManifestImageOk | ManifestImageError)[] = [];
+    let ok = 0;
+    let failed = 0;
+    const batchOpts: KitOptions = { ...opts, quiet: true };
+
+    // Stream: process one image → write its kit folder → append a compact
+    // manifest entry → drop per-image data (it goes out of scope each
+    // iteration), so memory stays bounded over an arbitrarily large folder.
+    // One bad image is recorded and skipped — it must never abort the batch.
+    for (const file of files) {
+        const baseName = path.basename(file, path.extname(file));
+        // The kit folder is keyed by the FULL filename, not the
+        // extension-stripped base: `photo.jpg` and `photo.png` are distinct
+        // images and must not share `<out>/photo` — otherwise the second
+        // overwrites the first, and a later failure's cleanup would delete an
+        // already-successful kit while the manifest still reports it ok.
+        // readdir entries are single path components, so this is injective and
+        // traversal-safe. Inner artifact files keep the clean base name.
+        const kitDir = path.join(outputDir, file);
+        try {
+            fs.mkdirSync(kitDir, { recursive: true });
+            const res = await generateKit(
+                path.join(inputDir, file),
+                path.join(kitDir, baseName + ".svg"),
+                batchOpts,
+            );
+            images.push({ file, status: "ok", sha256: res.sha256, colorBOM: res.colorBOM });
+            ok++;
+            console.log(`ok    ${file}`);
+        } catch (e) {
+            // Drop the failed kit's (empty or partial) folder so the output
+            // tree only ever contains complete kits; the manifest is the
+            // record of the failure.
+            fs.rmSync(kitDir, { recursive: true, force: true });
+            // First line only: deeper stack/path noise would make the manifest
+            // non-deterministic and is not actionable in a batch report.
+            const msg = String((e as Error).message ?? e).split("\n")[0];
+            images.push({ file, status: "error", error: msg });
+            failed++;
+            console.log(`FAIL  ${file}: ${msg}`);
+        }
+    }
+
+    // Fixed key order + filename-sorted entries → byte-identical manifest
+    // across runs in the same environment (proven by the determinism spike;
+    // the PDF is excluded from the per-image hash for that reason).
+    const manifest = {
+        generator: "paint-by-numbers-generator",
+        catalog: { id: opts.catalog.id, name: opts.catalog.name },
+        settings: {
+            colors: opts.settings.kMeansNrOfClusters,
+            randomSeed: opts.settings.randomSeed,
+            canvasSizeCm: [opts.canvasWidthCm, opts.canvasHeightCm],
+            coveragePerCm2: opts.coverageConst,
+            paper: opts.paperName,
+            dpi: opts.dpi,
+        },
+        counts: { total: files.length, ok, failed },
+        images,
+    };
+    const manifestPath = path.join(outputDir, "manifest.json");
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+    console.log(`\nkit-batch: ${ok} ok, ${failed} failed -> ${manifestPath}`);
+    // Exit 0 even with failures: a partial batch with a recorded error is a
+    // success of the batch runner (the iron isolation rule).
+}
+
+async function main(): Promise<void> {
+    const args = minimist(process.argv.slice(2));
+
+    if (args._[0] === "kit-batch") {
+        return runBatch(args);
+    }
+
+    const imagePath = args.i;
+    const svgPath = args.o;
+    if (typeof imagePath === "undefined" || typeof svgPath === "undefined") {
+        console.log("Usage: exe -i <input_image> -o <output_svg> [-c <settings_json>]");
+        console.log("  [--catalog <catalog_json>]  snap colors to a real paint catalog");
+        console.log("  [--colors <N>]              number of paint regions (painting complexity)");
+        console.log("  [--canvas-size <WxH>]       physical canvas size in cm (default 40x50)");
+        console.log("  [--paper <A4|Letter>]       print paper for the kit PDF (default A4)");
+        console.log("  [--dpi <N>]                 print resolution for the kit PDF (default 300)");
+        console.log("  [--coverage <n>]            paint tubes per cm^2 estimate (default 0.0025)");
+        console.log("");
+        console.log("Batch: exe kit-batch <input-dir> <output-dir> --catalog <catalog_json> [flags]");
+        process.exit(1);
+    }
+
+    const opts = parseKitOptions(args);
+    await generateKit(imagePath, svgPath, opts);
 }
 
 main().then(() => {
