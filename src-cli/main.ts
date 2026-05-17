@@ -754,7 +754,14 @@ async function runBatch(args: minimist.ParsedArgs): Promise<void> {
     // One bad image is recorded and skipped — it must never abort the batch.
     for (const file of files) {
         const baseName = path.basename(file, path.extname(file));
-        const kitDir = path.join(outputDir, baseName);
+        // The kit folder is keyed by the FULL filename, not the
+        // extension-stripped base: `photo.jpg` and `photo.png` are distinct
+        // images and must not share `<out>/photo` — otherwise the second
+        // overwrites the first, and a later failure's cleanup would delete an
+        // already-successful kit while the manifest still reports it ok.
+        // readdir entries are single path components, so this is injective and
+        // traversal-safe. Inner artifact files keep the clean base name.
+        const kitDir = path.join(outputDir, file);
         try {
             fs.mkdirSync(kitDir, { recursive: true });
             const res = await generateKit(

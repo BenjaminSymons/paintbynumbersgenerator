@@ -434,8 +434,9 @@ check("CRITICAL kit-batch isolation: corrupt file recorded, batch continues, exi
         && Array.isArray(byFile["a.png"].colorBOM), "a.png must be ok with sha256 + colorBOM");
     assert(byFile["c.png"].status === "error" && typeof byFile["c.png"].error === "string"
         && byFile["c.png"].error.length > 0, "c.png must be recorded as an error");
-    assert(fs.existsSync(path.join(outDir, "a", "a-kit.pdf")), "a kit PDF must exist");
-    assert(!fs.existsSync(path.join(outDir, "c")), "failed image must not leave a kit folder");
+    // Kit folders are keyed by the full filename (collision-safe).
+    assert(fs.existsSync(path.join(outDir, "a.png", "a-kit.pdf")), "a kit PDF must exist");
+    assert(!fs.existsSync(path.join(outDir, "c.png")), "failed image must not leave a kit folder");
 });
 
 // ---- 20. CRITICAL determinism: two batch runs -> byte-identical manifest --
@@ -452,6 +453,32 @@ check("CRITICAL kit-batch determinism: manifest byte-identical across runs", () 
     const ma = fs.readFileSync(path.join(a, "manifest.json"));
     const mb = fs.readFileSync(path.join(b, "manifest.json"));
     assert(ma.equals(mb), "manifest.json must be byte-identical across two runs (same input+seed+catalog)");
+});
+
+// ---- 21. REGRESSION: same basename, different extension must not collide --
+check("REGRESSION kit-batch: photo.jpg + photo.png get separate kits, no clobber", () => {
+    const inDir = path.join(work, "coll-in");
+    fs.mkdirSync(inDir, { recursive: true });
+    fs.copyFileSync(TESTINPUT, path.join(inDir, "photo.png"));
+    fs.copyFileSync(SOLID_SRC, path.join(inDir, "photo.jpg"));
+    const outDir = path.join(work, "coll-out");
+    const r = run(["kit-batch", inDir, outDir, "-c", SETTINGS, "--catalog", GENERIC,
+        "--colors", "8", "--canvas-size", "20x25"]);
+    assert(r.code === 0, `expected exit 0, got ${r.code}: ${r.stderr}`);
+    const m = J(path.join(outDir, "manifest.json"));
+    assert(m.counts.total === 2 && m.counts.ok === 2,
+        `both same-basename images must succeed, got ${JSON.stringify(m.counts)}`);
+    // Distinct kit folders (keyed by full filename), both with a real PDF —
+    // proves the second image did not overwrite or delete the first.
+    assert(fs.existsSync(path.join(outDir, "photo.png", "photo-kit.pdf")),
+        "photo.png kit must exist independently");
+    assert(fs.existsSync(path.join(outDir, "photo.jpg", "photo-kit.pdf")),
+        "photo.jpg kit must exist independently");
+    // Every ok entry's sha256 must correspond to a kit that is still on disk.
+    for (const e of m.images.filter((x) => x.status === "ok")) {
+        assert(fs.existsSync(path.join(outDir, e.file, "photo-kit.pdf")),
+            `manifest reports ${e.file} ok but its kit is missing (lying manifest)`);
+    }
 });
 
 fs.rmSync(work, { recursive: true, force: true });

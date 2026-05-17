@@ -29,6 +29,13 @@ four-digit `MAJOR.MINOR.PATCH.MICRO` version in the `VERSION` file.
   `generateKit()` (shared by single mode and `kit-batch`); single-image
   behaviour and output are unchanged.
 
+### Fixed
+- `kit-batch` now keys each kit folder by the full filename. Two images
+  sharing a base name but differing in extension (`photo.jpg` + `photo.png`)
+  no longer collide on one folder — previously the second overwrote the
+  first, and a later failure's cleanup could delete an already-successful
+  kit while the manifest still reported it ok.
+
 ## [2.2.0.0] - 2026-05-17
 
 ### Added
