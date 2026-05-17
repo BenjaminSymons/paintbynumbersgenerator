@@ -81,4 +81,13 @@ $(document).ready(function () {
     $("#lnkTrivial").click(() => { loadExample("imgTrivial"); return false; });
     $("#lnkSmall").click(() => { loadExample("imgSmall"); return false; });
     $("#lnkMedium").click(() => { loadExample("imgMedium"); return false; });
+
+    // The primary/download controls are role="button" anchors with no href, so
+    // they are not natively keyboard-activatable. Map Enter/Space to a click.
+    $("[role=button]").on("keydown", function (ev) {
+        if (ev.key === "Enter" || ev.key === " ") {
+            ev.preventDefault();
+            $(this).trigger("click");
+        }
+    });
 });
