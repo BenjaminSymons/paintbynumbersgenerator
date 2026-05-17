@@ -4,6 +4,64 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project uses a
 four-digit `MAJOR.MINOR.PATCH.MICRO` version in the `VERSION` file.
 
+## [2.3.0.0] - 2026-05-17
+
+### Added
+- **Batch kit pipeline (Phase 2).** `kit-batch <input-dir> <output-dir>
+  --catalog <file> [flags]` processes a folder of images unattended, one kit
+  folder per image, reusing a single parsed settings + catalog.
+  - Per-image isolation: a corrupt/unreadable image is recorded and skipped —
+    it never aborts the batch, and the run still exits 0.
+  - Aggregate `manifest.json`: generator, catalog, settings, counts, and a
+    per-image entry (`status` + `sha256` + `colorBOM`, or `status` + `error`).
+  - The manifest is **byte-identical across runs** in the same environment
+    (same input + seed + catalog), verified by a determinism spike and the
+    smoke suite. The `sha256` deliberately covers only the deterministic
+    artifacts (palette JSON + shopping list + canvas SVG); the PDF is excluded
+    because pdfkit embeds a timestamp/file-id (visually equivalent, per design).
+  - Streaming: each image is processed, written, and released before the next,
+    so memory stays bounded over an arbitrarily large folder.
+- `scripts/kit-smoke.mjs` extended with the two Phase-2 CRITICAL checks
+  (batch isolation + manifest determinism); still run via `npm run test:kit`.
+
+### Changed
+- The CLI's single-image kit path was refactored into a reusable
+  `generateKit()` (shared by single mode and `kit-batch`); single-image
+  behaviour and output are unchanged.
+
+### Fixed
+- `kit-batch` now keys each kit folder by the full filename. Two images
+  sharing a base name but differing in extension (`photo.jpg` + `photo.png`)
+  no longer collide on one folder — previously the second overwrote the
+  first, and a later failure's cleanup could delete an already-successful
+  kit while the manifest still reported it ok.
+
+## [2.2.0.0] - 2026-05-17
+
+### Added
+- **Print-ready kit PDF (Phase 1 step 4).** Kit mode now also emits a
+  `*-kit.pdf` you can actually print and paint:
+  - A colored cover preview, the numbered canvas tiled across real paper at the
+    declared physical size, and a swatch legend (number + SKU + name + colour).
+  - `--paper <A4|Letter>` (default A4) and `--dpi <N>` (default 300).
+    `--canvas-size` now drives true 1:1 physical scaling, not just the
+    tube estimate.
+  - Tiled multi-page output gets corner crop ticks and per-sheet seam labels
+    with a 5 mm overlap for hand-alignment.
+  - Print-legibility guard: facets too small to carry a readable hand-painted
+    number at the chosen canvas size keep their region/fill but drop the
+    in-facet number — it stays recoverable from the legend.
+  - Also writes `*-cover.png` and `*-canvas.svg` as standalone deliverables;
+    the SVG now carries a `viewBox`.
+- `scripts/kit-smoke.mjs` extended with PDF / tile-count / legibility-guard /
+  paper+dpi-validation checks (still run via `npm run test:kit` in CI).
+
+### Notes
+- Kit labels render in the PDF core font Helvetica (deterministic across
+  platforms, no vendored binary). The PDF is required to be visually
+  equivalent, not byte-identical — byte-identical determinism is a Phase 2
+  (`manifest.json`) concern.
+
 ## [2.1.0.0] - 2026-05-17
 
 ### Added

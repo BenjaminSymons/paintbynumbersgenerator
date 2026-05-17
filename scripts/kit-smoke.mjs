@@ -1,8 +1,10 @@
-// Kit-pipeline smoke test (Phase 1 steps 1-3). Not a unit-test framework —
-// a self-contained assertion script in the project's existing CLI-smoke style.
-// Generates fixtures in a temp dir, runs dist/cli.js, asserts on the outputs,
-// exits non-zero on any failure. Step 4 (PDF / print-legibility / legend) is
-// intentionally out of scope here and is covered when step 4 lands (6b).
+// Kit-pipeline smoke test (Phase 1 steps 1-4 + Phase 2 step 5). Not a
+// unit-test framework — a self-contained assertion script in the project's
+// existing CLI-smoke style. Generates fixtures in a temp dir, runs
+// dist/cli.js, asserts on the outputs, exits non-zero on any failure.
+// Checks 15-18 cover step 4 (print-ready PDF, tile-count math, the
+// print-legibility guard, paper/dpi validation); 19-20 cover step 6b
+// (kit-batch isolation + byte-identical manifest determinism).
 //
 // Run: node scripts/kit-smoke.mjs   (after `npm run build:cli`)
 import { spawnSync } from "node:child_process";
@@ -338,6 +340,145 @@ check("decimal --canvas-size propagates; partial settings falls back to defaults
     assert(r2.code === 0, `partial settings: expected exit 0 (defaults fill gaps), got ${r2.code}: ${r2.stderr}`);
     const pal = J(path.join(work, "min.json"));
     assert(Array.isArray(pal) && pal.length >= 1, "partial settings must still yield a valid palette");
+});
+
+// ---- 15. kit PDF + cover + canvas artifacts emitted ----------------------
+// Tile-count math, mirrored from kitpdf.ts (A4, 1cm margin, 0.5cm overlap).
+const A4 = { w: 21.0, h: 29.7 };
+const tileCount = (canvasCm, paperCm) => {
+    const printable = paperCm - 2 * 1.0;
+    if (canvasCm <= printable) return 1;
+    return Math.ceil((canvasCm - 0.5) / (printable - 0.5));
+};
+const pdfCount = (p) => {
+    const m = fs.readFileSync(p, "latin1").match(/\/Count (\d+)/);
+    return m ? Number(m[1]) : -1;
+};
+check("kit PDF + cover.png + canvas.svg emitted, single-sheet page count", () => {
+    const o = path.join(work, "kit1.svg");
+    const r = run(["-i", TESTINPUT, "-o", o, "-c", SETTINGS, "--catalog", GENERIC,
+        "--colors", "12", "--canvas-size", "10x12"]);
+    assert(r.code === 0, `expected exit 0, got ${r.code}: ${r.stderr}`);
+    const pdf = path.join(work, "kit1-kit.pdf");
+    const png = path.join(work, "kit1-cover.png");
+    const csv = path.join(work, "kit1-canvas.svg");
+    assert(fs.existsSync(pdf), "kit PDF not emitted");
+    assert(fs.readFileSync(pdf, "latin1").startsWith("%PDF"), "kit PDF has no %PDF header");
+    assert(fs.statSync(pdf).size > 2000, "kit PDF suspiciously small");
+    const sig = fs.readFileSync(png).subarray(0, 8);
+    assert(sig.equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
+        "cover.png is not a PNG");
+    assert(/viewBox="0 0 \d+ \d+"/.test(fs.readFileSync(csv, "utf8")),
+        "canvas.svg missing viewBox (required for PDF scaling)");
+    // 10x12 cm fits one A4 sheet -> cover + 1 canvas + 1 legend = 3
+    assert(pdfCount(pdf) === 3, `single-sheet kit must be 3 pages, got ${pdfCount(pdf)}`);
+});
+
+// ---- 16. tiled kit: page count == cover + cols*rows + legend -------------
+check("tiled kit page count matches tile math", () => {
+    const o = path.join(work, "kit2.svg");
+    const r = run(["-i", TESTINPUT, "-o", o, "-c", SETTINGS, "--catalog", GENERIC,
+        "--colors", "8", "--canvas-size", "40x50", "--paper", "A4"]);
+    assert(r.code === 0, `expected exit 0, got ${r.code}: ${r.stderr}`);
+    const cols = tileCount(40, A4.w), rows = tileCount(50, A4.h);
+    assert(cols > 1 && rows > 1, `fixture should tile, got ${cols}x${rows}`);
+    // testinput is simple line art -> few paints -> single legend page
+    const expected = 1 + cols * rows + 1;
+    assert(pdfCount(path.join(work, "kit2-kit.pdf")) === expected,
+        `tiled kit expected ${expected} pages (1 cover + ${cols}x${rows} + 1 legend), got ${pdfCount(path.join(work, "kit2-kit.pdf"))}`);
+});
+
+// ---- 17. CRITICAL print-legibility guard: tiny canvas suppresses numbers -
+check("CRITICAL legibility guard suppresses sub-threshold numbers, keeps regions", () => {
+    const big = path.join(work, "big.svg"), tiny = path.join(work, "tiny.svg");
+    const rb = run(["-i", TESTINPUT, "-o", big, "-c", SETTINGS, "--catalog", GENERIC,
+        "--colors", "12", "--canvas-size", "200x250"]);
+    const rt = run(["-i", TESTINPUT, "-o", tiny, "-c", SETTINGS, "--catalog", GENERIC,
+        "--colors", "12", "--canvas-size", "3x4"]);
+    assert(rb.code === 0 && rt.code === 0, `runs failed: ${rb.stderr} ${rt.stderr}`);
+    const txt = (p) => (fs.readFileSync(p, "utf8").match(/<\/text>/g) || []).length;
+    const pth = (p) => (fs.readFileSync(p, "utf8").match(/<path/g) || []).length;
+    const bigSvg = path.join(work, "big-canvas.svg"), tinySvg = path.join(work, "tiny-canvas.svg");
+    assert(txt(bigSvg) > 0, "large canvas should keep its numbers");
+    assert(txt(tinySvg) < txt(bigSvg), `tiny canvas must suppress numbers: tiny=${txt(tinySvg)} big=${txt(bigSvg)}`);
+    assert(pth(tinySvg) === pth(bigSvg) && pth(tinySvg) > 0,
+        `regions must be retained when numbers are suppressed: tiny=${pth(tinySvg)} big=${pth(bigSvg)}`);
+});
+
+// ---- 18. invalid --paper / --dpi rejected --------------------------------
+check("invalid --paper / --dpi rejected (exit 1)", () => {
+    const o = path.join(work, "pp.svg");
+    for (const [flag, val] of [["--paper", "A3"], ["--dpi", "50"], ["--dpi", "abc"]]) {
+        const r = run(["-i", TESTINPUT, "-o", o, "-c", SETTINGS, "--catalog", GENERIC, flag, val]);
+        assert(r.code !== 0, `${flag} ${val}: expected non-zero exit, got ${r.code}`);
+        assert(new RegExp(flag).test(r.stderr), `${flag} ${val}: expected error mentioning ${flag}, got: ${r.stderr}`);
+    }
+});
+
+// ---- 19. CRITICAL batch isolation: one corrupt file must not abort --------
+check("CRITICAL kit-batch isolation: corrupt file recorded, batch continues, exit 0", () => {
+    const inDir = path.join(work, "batch-in");
+    fs.mkdirSync(inDir, { recursive: true });
+    fs.copyFileSync(TESTINPUT, path.join(inDir, "a.png"));
+    fs.copyFileSync(SOLID_SRC, path.join(inDir, "b.png"));
+    fs.writeFileSync(path.join(inDir, "c.png"), "this is not a PNG");
+    const outDir = path.join(work, "batch-out");
+    const r = run(["kit-batch", inDir, outDir, "-c", SETTINGS, "--catalog", GENERIC,
+        "--colors", "10", "--canvas-size", "20x25"]);
+    assert(r.code === 0, `batch with a corrupt file must still exit 0, got ${r.code}: ${r.stderr}`);
+    const m = J(path.join(outDir, "manifest.json"));
+    assert(m.counts.total === 3 && m.counts.ok === 2 && m.counts.failed === 1,
+        `expected total3/ok2/failed1, got ${JSON.stringify(m.counts)}`);
+    const byFile = Object.fromEntries(m.images.map((i) => [i.file, i]));
+    assert(byFile["a.png"].status === "ok" && typeof byFile["a.png"].sha256 === "string"
+        && Array.isArray(byFile["a.png"].colorBOM), "a.png must be ok with sha256 + colorBOM");
+    assert(byFile["c.png"].status === "error" && typeof byFile["c.png"].error === "string"
+        && byFile["c.png"].error.length > 0, "c.png must be recorded as an error");
+    // Kit folders are keyed by the full filename (collision-safe).
+    assert(fs.existsSync(path.join(outDir, "a.png", "a-kit.pdf")), "a kit PDF must exist");
+    assert(!fs.existsSync(path.join(outDir, "c.png")), "failed image must not leave a kit folder");
+});
+
+// ---- 20. CRITICAL determinism: two batch runs -> byte-identical manifest --
+check("CRITICAL kit-batch determinism: manifest byte-identical across runs", () => {
+    const inDir = path.join(work, "det-in");
+    fs.mkdirSync(inDir, { recursive: true });
+    fs.copyFileSync(TESTINPUT, path.join(inDir, "x.png"));
+    fs.copyFileSync(SOLID_SRC, path.join(inDir, "y.png"));
+    const a = path.join(work, "det-a"), b = path.join(work, "det-b");
+    const args = (out) => ["kit-batch", inDir, out, "-c", SETTINGS, "--catalog", GENERIC,
+        "--colors", "12", "--canvas-size", "30x40"];
+    const ra = run(args(a)), rb = run(args(b));
+    assert(ra.code === 0 && rb.code === 0, `both runs must exit 0: ${ra.stderr} ${rb.stderr}`);
+    const ma = fs.readFileSync(path.join(a, "manifest.json"));
+    const mb = fs.readFileSync(path.join(b, "manifest.json"));
+    assert(ma.equals(mb), "manifest.json must be byte-identical across two runs (same input+seed+catalog)");
+});
+
+// ---- 21. REGRESSION: same basename, different extension must not collide --
+check("REGRESSION kit-batch: photo.jpg + photo.png get separate kits, no clobber", () => {
+    const inDir = path.join(work, "coll-in");
+    fs.mkdirSync(inDir, { recursive: true });
+    fs.copyFileSync(TESTINPUT, path.join(inDir, "photo.png"));
+    fs.copyFileSync(SOLID_SRC, path.join(inDir, "photo.jpg"));
+    const outDir = path.join(work, "coll-out");
+    const r = run(["kit-batch", inDir, outDir, "-c", SETTINGS, "--catalog", GENERIC,
+        "--colors", "8", "--canvas-size", "20x25"]);
+    assert(r.code === 0, `expected exit 0, got ${r.code}: ${r.stderr}`);
+    const m = J(path.join(outDir, "manifest.json"));
+    assert(m.counts.total === 2 && m.counts.ok === 2,
+        `both same-basename images must succeed, got ${JSON.stringify(m.counts)}`);
+    // Distinct kit folders (keyed by full filename), both with a real PDF —
+    // proves the second image did not overwrite or delete the first.
+    assert(fs.existsSync(path.join(outDir, "photo.png", "photo-kit.pdf")),
+        "photo.png kit must exist independently");
+    assert(fs.existsSync(path.join(outDir, "photo.jpg", "photo-kit.pdf")),
+        "photo.jpg kit must exist independently");
+    // Every ok entry's sha256 must correspond to a kit that is still on disk.
+    for (const e of m.images.filter((x) => x.status === "ok")) {
+        assert(fs.existsSync(path.join(outDir, e.file, "photo-kit.pdf")),
+            `manifest reports ${e.file} ok but its kit is missing (lying manifest)`);
+    }
 });
 
 fs.rmSync(work, { recursive: true, force: true });

@@ -98,6 +98,25 @@ proven otherwise.
   bridges the two typings with explicit `as unknown as ImageData` casts.
 - `outputProfiles` in the settings JSON drive multiple renders (svg/png/jpg)
   from one run; PNG/JPG go through `sharp`.
+- Kit mode (`--catalog`) also emits a print-ready `*-kit.pdf` via
+  `src-cli/kitpdf.ts` (`pdfkit` + `svg-to-pdfkit`). `pdfkit` must stay an
+  esbuild `external` (it reads its AFM font metrics from its own package dir at
+  runtime); labels use the PDF core font Helvetica deliberately (deterministic,
+  no vendored binary). The CLI `createSVG` now emits a `viewBox` (required for
+  PDF scaling) and takes a `minLabelPx` print-legibility guard — the web
+  `createSVG` in `guiprocessmanager.ts` does NOT have these (kit mode is
+  CLI-only, so this is an intentional divergence, not the duplication wart).
+- The single-image kit path is `generateKit()`; `kit-batch <in> <out>`
+  (positional subcommand, dispatched on `args._[0]`) reuses it per image with
+  `quiet:true`. Options are parsed once via `parseKitOptions()`.
+- Batch determinism contract: the aggregate `manifest.json` is byte-identical
+  across runs **in the same environment** only. The per-image `sha256` hashes
+  the proven-deterministic artifacts (palette JSON + shopping list + canvas
+  SVG) and deliberately excludes the PDF (pdfkit embeds a timestamp/file-id).
+  The whole logical pipeline (k-means + facet stages + sharp PNG) was verified
+  byte-deterministic same-machine; cross-platform byte-identity is out of
+  scope (canvas/sharp pixel variance). If a determinism test ever fails,
+  treat it as an investigation, not a quick patch.
 
 ## Conventions
 
