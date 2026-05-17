@@ -1,8 +1,10 @@
-// Kit-pipeline smoke test (Phase 1 steps 1-4). Not a unit-test framework —
-// a self-contained assertion script in the project's existing CLI-smoke style.
-// Generates fixtures in a temp dir, runs dist/cli.js, asserts on the outputs,
-// exits non-zero on any failure. Checks 15-18 cover step 4 (print-ready PDF,
-// tile-count math, the print-legibility guard, paper/dpi validation).
+// Kit-pipeline smoke test (Phase 1 steps 1-4 + Phase 2 step 5). Not a
+// unit-test framework — a self-contained assertion script in the project's
+// existing CLI-smoke style. Generates fixtures in a temp dir, runs
+// dist/cli.js, asserts on the outputs, exits non-zero on any failure.
+// Checks 15-18 cover step 4 (print-ready PDF, tile-count math, the
+// print-legibility guard, paper/dpi validation); 19-20 cover step 6b
+// (kit-batch isolation + byte-identical manifest determinism).
 //
 // Run: node scripts/kit-smoke.mjs   (after `npm run build:cli`)
 import { spawnSync } from "node:child_process";
@@ -411,6 +413,45 @@ check("invalid --paper / --dpi rejected (exit 1)", () => {
         assert(r.code !== 0, `${flag} ${val}: expected non-zero exit, got ${r.code}`);
         assert(new RegExp(flag).test(r.stderr), `${flag} ${val}: expected error mentioning ${flag}, got: ${r.stderr}`);
     }
+});
+
+// ---- 19. CRITICAL batch isolation: one corrupt file must not abort --------
+check("CRITICAL kit-batch isolation: corrupt file recorded, batch continues, exit 0", () => {
+    const inDir = path.join(work, "batch-in");
+    fs.mkdirSync(inDir, { recursive: true });
+    fs.copyFileSync(TESTINPUT, path.join(inDir, "a.png"));
+    fs.copyFileSync(SOLID_SRC, path.join(inDir, "b.png"));
+    fs.writeFileSync(path.join(inDir, "c.png"), "this is not a PNG");
+    const outDir = path.join(work, "batch-out");
+    const r = run(["kit-batch", inDir, outDir, "-c", SETTINGS, "--catalog", GENERIC,
+        "--colors", "10", "--canvas-size", "20x25"]);
+    assert(r.code === 0, `batch with a corrupt file must still exit 0, got ${r.code}: ${r.stderr}`);
+    const m = J(path.join(outDir, "manifest.json"));
+    assert(m.counts.total === 3 && m.counts.ok === 2 && m.counts.failed === 1,
+        `expected total3/ok2/failed1, got ${JSON.stringify(m.counts)}`);
+    const byFile = Object.fromEntries(m.images.map((i) => [i.file, i]));
+    assert(byFile["a.png"].status === "ok" && typeof byFile["a.png"].sha256 === "string"
+        && Array.isArray(byFile["a.png"].colorBOM), "a.png must be ok with sha256 + colorBOM");
+    assert(byFile["c.png"].status === "error" && typeof byFile["c.png"].error === "string"
+        && byFile["c.png"].error.length > 0, "c.png must be recorded as an error");
+    assert(fs.existsSync(path.join(outDir, "a", "a-kit.pdf")), "a kit PDF must exist");
+    assert(!fs.existsSync(path.join(outDir, "c")), "failed image must not leave a kit folder");
+});
+
+// ---- 20. CRITICAL determinism: two batch runs -> byte-identical manifest --
+check("CRITICAL kit-batch determinism: manifest byte-identical across runs", () => {
+    const inDir = path.join(work, "det-in");
+    fs.mkdirSync(inDir, { recursive: true });
+    fs.copyFileSync(TESTINPUT, path.join(inDir, "x.png"));
+    fs.copyFileSync(SOLID_SRC, path.join(inDir, "y.png"));
+    const a = path.join(work, "det-a"), b = path.join(work, "det-b");
+    const args = (out) => ["kit-batch", inDir, out, "-c", SETTINGS, "--catalog", GENERIC,
+        "--colors", "12", "--canvas-size", "30x40"];
+    const ra = run(args(a)), rb = run(args(b));
+    assert(ra.code === 0 && rb.code === 0, `both runs must exit 0: ${ra.stderr} ${rb.stderr}`);
+    const ma = fs.readFileSync(path.join(a, "manifest.json"));
+    const mb = fs.readFileSync(path.join(b, "manifest.json"));
+    assert(ma.equals(mb), "manifest.json must be byte-identical across two runs (same input+seed+catalog)");
 });
 
 fs.rmSync(work, { recursive: true, force: true });

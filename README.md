@@ -148,6 +148,25 @@ The colored cover and the numbered canvas are also written standalone as
 `output-cover.png` and `output-canvas.svg`. Colours throughout are the
 *closest catalog swatch* — approximate, not calibrated paint matches.
 
+#### Batch: a whole folder at once
+
+To process a folder of images unattended:
+
+```
+node dist/cli.js kit-batch <input-dir> <output-dir> \
+  --catalog src-cli/catalogs/generic-acrylic-24.json \
+  --colors 16 --canvas-size 40x50 --paper A4
+```
+
+It writes one kit folder per image into `<output-dir>`, plus an aggregate
+`manifest.json` (generator, catalog, settings, counts, and a per-image entry
+with a `sha256` + `colorBOM`, or an `error`). A corrupt or unreadable image is
+recorded in the manifest and skipped — it never aborts the batch, and the run
+still exits 0. Re-running the same folder with the same seed + catalog produces
+a **byte-identical `manifest.json`** in the same environment (the `sha256`
+covers the deterministic artifacts; the PDF is visually equivalent but not
+byte-identical, since it embeds a timestamp). `kit-batch` requires `--catalog`.
+
 ## Screenshots
 
 ![Screenshot](https://i.imgur.com/6uHm78x.png])

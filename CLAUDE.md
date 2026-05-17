@@ -106,6 +106,17 @@ proven otherwise.
   PDF scaling) and takes a `minLabelPx` print-legibility guard — the web
   `createSVG` in `guiprocessmanager.ts` does NOT have these (kit mode is
   CLI-only, so this is an intentional divergence, not the duplication wart).
+- The single-image kit path is `generateKit()`; `kit-batch <in> <out>`
+  (positional subcommand, dispatched on `args._[0]`) reuses it per image with
+  `quiet:true`. Options are parsed once via `parseKitOptions()`.
+- Batch determinism contract: the aggregate `manifest.json` is byte-identical
+  across runs **in the same environment** only. The per-image `sha256` hashes
+  the proven-deterministic artifacts (palette JSON + shopping list + canvas
+  SVG) and deliberately excludes the PDF (pdfkit embeds a timestamp/file-id).
+  The whole logical pipeline (k-means + facet stages + sharp PNG) was verified
+  byte-deterministic same-machine; cross-platform byte-identity is out of
+  scope (canvas/sharp pixel variance). If a determinism test ever fails,
+  treat it as an investigation, not a quick patch.
 
 ## Conventions
 
